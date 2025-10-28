@@ -20,6 +20,8 @@ from scripts import (
     SKUAnalyzer, 
     ABCFMSAnalyzer, 
     ReceiptAnalyzer, 
+    InventoryAnalyzer,
+    ManpowerAnalyzer,
     ExcelGenerator
 )
 
@@ -311,53 +313,181 @@ def show_variables_section():
 def create_variables_form():
     """Create the unified variables configuration form"""
     
-    # Use the existing form creation logic from the original app.py
-    # Global Variables Section
-    st.markdown("#### 🌐 Global Variables")
+    # Initialize default receipt percentiles if not exists
+    if 'receipt_analysis' not in st.session_state.analysis_variables:
+        st.session_state.analysis_variables['receipt_analysis'] = {
+            'percentile_levels': [95, 90, 85, 80, 75]
+        }
     
-    col1, col2 = st.columns(2)
+    # Initialize manpower analysis variables if not exists  
+    if 'manpower_analysis' not in st.session_state.analysis_variables:
+        st.session_state.analysis_variables['manpower_analysis'] = config.DEFAULT_MANPOWER_ANALYSIS_PARAMS.copy()
+        # Also include the existing manpower parameters
+        st.session_state.analysis_variables['manpower_analysis'].update({
+            'target_efficiency': 85,
+            'standard_pick_rate': 60,
+            'shifts_per_day': 1,
+            'break_time_minutes': 30
+        })
     
-    with col1:
-        st.markdown("**ABC Classification Thresholds**")
-        abc_a_threshold = st.slider(
-            "A Items Threshold (%)",
-            min_value=50, max_value=90, 
-            value=st.session_state.analysis_variables['global']['abc_a_threshold'], 
-            step=5,
-            key="abc_a_threshold"
-        )
-        abc_b_threshold = st.slider(
-            "B Items Threshold (%)",
-            min_value=abc_a_threshold, max_value=95, 
-            value=st.session_state.analysis_variables['global']['abc_b_threshold'], 
-            step=5,
-            key="abc_b_threshold"
-        )
+    # Ensure all manpower analysis sub-sections exist
+    manpower_sections = ['picking', 'receiving_putaway', 'loading']
+    for section in manpower_sections:
+        if section not in st.session_state.analysis_variables['manpower_analysis']:
+            st.session_state.analysis_variables['manpower_analysis'][section] = config.DEFAULT_MANPOWER_ANALYSIS_PARAMS[section].copy()
     
-    with col2:
-        st.markdown("**FMS Classification Thresholds**")
-        fms_fast_threshold = st.slider(
-            "Fast Items Threshold (%)",
-            min_value=50, max_value=90, 
-            value=st.session_state.analysis_variables['order_analysis']['fms_fast_threshold'], 
-            step=5,
-            key="fms_fast_threshold"
-        )
-        fms_medium_threshold = st.slider(
-            "Medium Items Threshold (%)",
-            min_value=fms_fast_threshold, max_value=95, 
-            value=st.session_state.analysis_variables['order_analysis']['fms_medium_threshold'], 
-            step=5,
-            key="fms_medium_threshold"
-        )
+    # Order Analysis Variables Section (Expandable)
+    with st.expander("📈 Order Analysis Variables", expanded=True):
+        col1, col2 = st.columns(2)
         
-        st.markdown("**Percentile Analysis**")
-        percentile_levels = st.multiselect(
-            "Percentiles for Analysis",
+        with col1:
+            st.markdown("**ABC Classification Thresholds**")
+            abc_a_threshold = st.slider(
+                "A Items Threshold (%)",
+                min_value=50, max_value=90, 
+                value=st.session_state.analysis_variables['global']['abc_a_threshold'], 
+                step=5,
+                key="abc_a_threshold"
+            )
+            abc_b_threshold = st.slider(
+                "B Items Threshold (%)",
+                min_value=abc_a_threshold, max_value=95, 
+                value=st.session_state.analysis_variables['global']['abc_b_threshold'], 
+                step=5,
+                key="abc_b_threshold"
+            )
+        
+        with col2:
+            st.markdown("**FMS Classification Thresholds**")
+            fms_fast_threshold = st.slider(
+                "Fast Items Threshold (%)",
+                min_value=50, max_value=90, 
+                value=st.session_state.analysis_variables['order_analysis']['fms_fast_threshold'], 
+                step=5,
+                key="fms_fast_threshold"
+            )
+            fms_medium_threshold = st.slider(
+                "Medium Items Threshold (%)",
+                min_value=fms_fast_threshold, max_value=95, 
+                value=st.session_state.analysis_variables['order_analysis']['fms_medium_threshold'], 
+                step=5,
+                key="fms_medium_threshold"
+            )
+            
+            st.markdown("**Percentile Analysis**")
+            order_percentile_levels = st.multiselect(
+                "Percentiles for Analysis",
+                options=[99, 95, 90, 85, 80, 75, 70, 65, 60],
+                default=st.session_state.analysis_variables['order_analysis']['percentile_levels'],
+                key="order_percentile_levels"
+            )
+    
+    # Receipt Analysis Variables Section (Expandable)
+    with st.expander("📦 Receipt Analysis Variables", expanded=False):
+        st.markdown("**Receipt Analysis Percentiles**")
+        
+        receipt_percentile_levels = st.multiselect(
+            "Percentiles for Receipt Analysis",
             options=[99, 95, 90, 85, 80, 75, 70, 65, 60],
-            default=st.session_state.analysis_variables['order_analysis']['percentile_levels'],
-            key="percentile_levels"
+            default=st.session_state.analysis_variables['receipt_analysis']['percentile_levels'],
+            key="receipt_percentile_levels"
         )
+    
+    # Manpower Analysis Variables Section (Expandable)
+    with st.expander("⚡ Manpower Analysis Variables", expanded=False):
+        
+        # Picking Manpower Analysis
+        st.markdown("### 🔄 Picking Manpower Analysis")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            picking_walk_distance = st.number_input(
+                "Avg Per Pallet Walk Distance (m)",
+                min_value=0.0, max_value=200.0, 
+                value=st.session_state.analysis_variables['manpower_analysis']['picking']['avg_walk_distance_per_pallet'],
+                step=1.0,
+                key="picking_walk_distance"
+            )
+            
+            picking_scan_time = st.number_input(
+                "Scan Time (s)",
+                min_value=0.0, max_value=30.0,
+                value=st.session_state.analysis_variables['manpower_analysis']['picking']['scan_time'],
+                step=0.1,
+                key="picking_scan_time"
+            )
+        
+        with col2:
+            picking_qty_time = st.number_input(
+                "Qty Pick Time (s)",
+                min_value=0.0, max_value=30.0,
+                value=st.session_state.analysis_variables['manpower_analysis']['picking']['qty_pick_time'],
+                step=0.1,
+                key="picking_qty_time"
+            )
+            
+            picking_misc_time = st.number_input(
+                "Per Pallet Miscellaneous Time (s)",
+                min_value=0.0, max_value=300.0,
+                value=st.session_state.analysis_variables['manpower_analysis']['picking']['misc_time_per_pallet'],
+                step=1.0,
+                key="picking_misc_time"
+            )
+        
+        # Receiving and Putaway Manpower Analysis
+        st.markdown("### 📥 Receiving and Putaway Manpower Analysis")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            receiving_unloading_time = st.number_input(
+                "Unloading time Per Case (s)",
+                min_value=0.0, max_value=60.0,
+                value=st.session_state.analysis_variables['manpower_analysis']['receiving_putaway']['unloading_time_per_case'],
+                step=0.1,
+                key="receiving_unloading_time"
+            )
+            
+            receiving_walk_distance = st.number_input(
+                "Avg Per Pallet Walk Distance (m)",
+                min_value=0.0, max_value=200.0,
+                value=st.session_state.analysis_variables['manpower_analysis']['receiving_putaway']['avg_walk_distance_per_pallet'],
+                step=1.0,
+                key="receiving_walk_distance"
+            )
+        
+        with col2:
+            receiving_scan_time = st.number_input(
+                "Scan Time (s)",
+                min_value=0.0, max_value=30.0,
+                value=st.session_state.analysis_variables['manpower_analysis']['receiving_putaway']['scan_time'],
+                step=0.1,
+                key="receiving_scan_time"
+            )
+            
+            receiving_misc_time = st.number_input(
+                "Miscellaneous Time (s)",
+                min_value=0.0, max_value=300.0,
+                value=st.session_state.analysis_variables['manpower_analysis']['receiving_putaway']['misc_time'],
+                step=1.0,
+                key="receiving_misc_time"
+            )
+        
+        # Loading Manpower Analysis
+        st.markdown("### 🚛 Loading Manpower Analysis")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            loading_time_per_case = st.number_input(
+                "Loading time per case (s)",
+                min_value=0.0, max_value=60.0,
+                value=st.session_state.analysis_variables['manpower_analysis']['loading']['loading_time_per_case'],
+                step=0.1,
+                key="loading_time_per_case"
+            )
+        
+        with col2:
+            # Empty column for layout balance
+            st.write("")
 
 def save_variables_configuration():
     """Save the variables configuration to session state"""
@@ -375,9 +505,12 @@ def save_variables_configuration():
         'order_analysis': {
             'fms_fast_threshold': st.session_state.get('fms_fast_threshold', 70),
             'fms_medium_threshold': st.session_state.get('fms_medium_threshold', 90),
-            'percentile_levels': st.session_state.get('percentile_levels', [95, 90, 85, 80, 75]),
+            'percentile_levels': st.session_state.get('order_percentile_levels', [95, 90, 85, 80, 75]),
             'vip_customer_threshold': 50,
             'seasonal_adjustment': False,
+        },
+        'receipt_analysis': {
+            'percentile_levels': st.session_state.get('receipt_percentile_levels', [95, 90, 85, 80, 75]),
         },
         'inventory_analysis': {
             'safety_stock_days': 7,
@@ -390,6 +523,21 @@ def save_variables_configuration():
             'standard_pick_rate': 60,
             'shifts_per_day': 1,
             'break_time_minutes': 30,
+            'picking': {
+                'avg_walk_distance_per_pallet': st.session_state.get('picking_walk_distance', 50.0),
+                'scan_time': st.session_state.get('picking_scan_time', 3.0),
+                'qty_pick_time': st.session_state.get('picking_qty_time', 2.0),
+                'misc_time_per_pallet': st.session_state.get('picking_misc_time', 30.0)
+            },
+            'receiving_putaway': {
+                'unloading_time_per_case': st.session_state.get('receiving_unloading_time', 5.0),
+                'avg_walk_distance_per_pallet': st.session_state.get('receiving_walk_distance', 40.0),
+                'scan_time': st.session_state.get('receiving_scan_time', 3.0),
+                'misc_time': st.session_state.get('receiving_misc_time', 20.0)
+            },
+            'loading': {
+                'loading_time_per_case': st.session_state.get('loading_time_per_case', 4.0)
+            }
         }
     }
 
@@ -524,6 +672,44 @@ def execute_warehouse_analysis():
             except Exception as e:
                 st.warning(f"⚠️ Receipt analysis failed: {str(e)}")
                 analysis_results['receipt_analysis'] = {'error': str(e), 'success': False}
+                current_progress += 10
+        
+        # Inventory Analysis
+        if 'inventory_data' in available_data:
+            status_text.text("📊 Analyzing inventory levels...")
+            progress_bar.progress(current_progress)
+            
+            try:
+                inventory_analyzer = InventoryAnalyzer(
+                    available_data['inventory_data'], 
+                    sku_master, 
+                    available_data.get('order_data'),
+                    analysis_config
+                )
+                analysis_results['inventory_analysis'] = inventory_analyzer.run_complete_analysis()
+                current_progress += 10
+            except Exception as e:
+                st.warning(f"⚠️ Inventory analysis failed: {str(e)}")
+                analysis_results['inventory_analysis'] = {'error': str(e), 'success': False}
+                current_progress += 10
+        
+        # Manpower Analysis
+        if 'order_data' in available_data or 'receipt_data' in available_data:
+            status_text.text("⚡ Analyzing manpower requirements...")
+            progress_bar.progress(current_progress)
+            
+            try:
+                manpower_analyzer = ManpowerAnalyzer(
+                    order_data=available_data.get('order_data'),
+                    receipt_data=available_data.get('receipt_data'),
+                    sku_master=sku_master,
+                    analysis_config=analysis_config
+                )
+                analysis_results['manpower_analysis'] = manpower_analyzer.run_complete_analysis()
+                current_progress += 10
+            except Exception as e:
+                st.warning(f"⚠️ Manpower analysis failed: {str(e)}")
+                analysis_results['manpower_analysis'] = {'error': str(e), 'success': False}
                 current_progress += 10
         
         # Step 4: Generate Excel Report

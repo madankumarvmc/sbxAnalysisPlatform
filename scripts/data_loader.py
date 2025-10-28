@@ -320,18 +320,215 @@ class DataLoader:
                 print(f"❌ Error loading inventory data: {str(e)}")
             return None
     
+    def _standardize_data_types(self, df, sheet_type):
+        """
+        Standardize data types for consistent processing across all sheets.
+        This solves merge issues caused by mixed data types (especially SKU codes).
+        
+        Args:
+            df: pandas DataFrame to standardize
+            sheet_type: Type of sheet ('order', 'sku_master', 'receipt', 'inventory')
+            
+        Returns:
+            pandas DataFrame with standardized data types
+        """
+        df = df.copy()
+        
+        if self.verbose:
+            print(f"🔧 Standardizing data types for {sheet_type} data...")
+        
+        # Define standardization rules for each sheet type
+        standardization_rules = {
+            'order': {
+                'Date': 'datetime',
+                'Order No.': 'string',
+                'Shipment No.': 'string', 
+                'Sku Code': 'sku_code',
+                'Qty in Cases': 'float',
+                'Qty in Eaches': 'float'
+            },
+            'sku_master': {
+                'Category': 'string',
+                'Sku Code': 'sku_code', 
+                'Case Config': 'float',
+                'Pallet Fit': 'float'
+            },
+            'receipt': {
+                'Receipt Date': 'datetime',
+                'SKU ID': 'sku_code',
+                'Shipment No': 'string',
+                'Truck No': 'string', 
+                'Batch': 'string',
+                'Quantity in Cases': 'float',
+                'Quantity in Eaches': 'float'
+            },
+            'inventory': {
+                'Calendar Day': 'datetime',
+                'SKU ID': 'sku_code',
+                'SKU Name': 'string',
+                'Total Stock in Cases (In Base Unit of Measure)': 'float',
+                'Total Stock in Pieces (In Base Unit of Measue)': 'float'
+            }
+        }
+        
+        if sheet_type not in standardization_rules:
+            if self.verbose:
+                print(f"⚠️ No standardization rules for {sheet_type}. Skipping.")
+            return df
+        
+        rules = standardization_rules[sheet_type]
+        
+        # Apply standardization for each column
+        for column, data_type in rules.items():
+            if column not in df.columns:
+                continue
+                
+            try:
+                if data_type == 'sku_code':
+                    # Standardize SKU codes to string format (critical for merging)
+                    df[column] = df[column].astype(str)
+                    # Remove .0 suffix that appears from numeric conversions
+                    df[column] = df[column].str.replace(r'\.0$', '', regex=True)
+                    # Trim whitespace
+                    df[column] = df[column].str.strip()
+                    # Handle NaN/null values
+                    df[column] = df[column].replace('nan', pd.NA)
+                    df[column] = df[column].replace('', pd.NA)
+                    
+                elif data_type == 'datetime':
+                    # Handle different datetime formats
+                    if column == 'Calendar Day':
+                        # Handle DD.MM.YYYY format for inventory data - strip whitespace first
+                        df[column] = df[column].astype(str).str.strip()
+                        df[column] = pd.to_datetime(df[column], format='%d.%m.%Y', errors='coerce')
+                    elif column == 'Receipt Date':
+                        # Handle DD.MM.YYYY format for receipt data - strip whitespace first
+                        df[column] = df[column].astype(str).str.strip()
+                        df[column] = pd.to_datetime(df[column], format='%d.%m.%Y', errors='coerce')
+                    else:
+                        df[column] = pd.to_datetime(df[column], errors='coerce')
+                        
+                elif data_type == 'float':
+                    # Convert to float for consistent calculations
+                    df[column] = pd.to_numeric(df[column], errors='coerce')
+                    
+                elif data_type == 'string':
+                    # Standardize strings
+                    df[column] = df[column].astype(str).str.strip()
+                    df[column] = df[column].replace('nan', pd.NA)
+                    df[column] = df[column].replace('', pd.NA)
+                    
+                if self.verbose:
+                    print(f"  ✅ {column} → {data_type}")
+                    
+            except Exception as e:
+                if self.verbose:
+                    print(f"  ⚠️ Failed to convert {column} to {data_type}: {e}")
+        
+        if self.verbose:
+            print(f"✅ Data type standardization complete for {sheet_type}")
+            
+        return df
+    
+    def _validate_standardized_data(self, df, sheet_type):
+        """
+        Validate that data has been properly standardized.
+        
+        Args:
+            df: pandas DataFrame to validate
+            sheet_type: Type of sheet ('order', 'sku_master', 'receipt', 'inventory')
+            
+        Returns:
+            dict: Validation results with warnings and errors
+        """
+        validation_results = {
+            'valid': True,
+            'warnings': [],
+            'errors': []
+        }
+        
+        # Expected data types after standardization
+        expected_types = {
+            'order': {
+                'Date': 'datetime64[ns]',
+                'Order No.': 'object',  # String
+                'Shipment No.': 'object',  # String
+                'Sku Code': 'object',  # String
+                'Qty in Cases': ['float64', 'int64'],  # Numeric
+                'Qty in Eaches': ['float64', 'int64']  # Numeric
+            },
+            'sku_master': {
+                'Category': 'object',  # String
+                'Sku Code': 'object',  # String
+                'Case Config': ['float64', 'int64'],  # Numeric
+                'Pallet Fit': ['float64', 'int64']  # Numeric
+            }
+        }
+        
+        if sheet_type not in expected_types:
+            return validation_results  # Skip validation for unknown sheet types
+        
+        expected = expected_types[sheet_type]
+        
+        for column, expected_dtype in expected.items():
+            if column not in df.columns:
+                continue
+                
+            actual_dtype = str(df[column].dtype)
+            
+            # Handle multiple acceptable types
+            if isinstance(expected_dtype, list):
+                if actual_dtype not in expected_dtype:
+                    validation_results['warnings'].append(
+                        f"{column}: Expected {expected_dtype}, got {actual_dtype}"
+                    )
+            else:
+                if actual_dtype != expected_dtype:
+                    validation_results['warnings'].append(
+                        f"{column}: Expected {expected_dtype}, got {actual_dtype}"
+                    )
+        
+        # Validate SKU codes specifically (critical for merging)
+        sku_col = 'Sku Code' if 'Sku Code' in df.columns else ('SKU ID' if 'SKU ID' in df.columns else None)
+        if sku_col:
+            # Check for mixed data types in SKU column
+            sample_skus = df[sku_col].dropna().head(100)
+            if len(sample_skus) > 0:
+                # All should be strings after standardization
+                non_string_count = sum(1 for sku in sample_skus if not isinstance(sku, str))
+                if non_string_count > 0:
+                    validation_results['errors'].append(
+                        f"{sku_col}: Found {non_string_count} non-string values after standardization"
+                    )
+                    validation_results['valid'] = False
+                
+                # Check for .0 suffixes (should be removed)
+                dot_zero_count = sum(1 for sku in sample_skus if str(sku).endswith('.0'))
+                if dot_zero_count > 0:
+                    validation_results['warnings'].append(
+                        f"{sku_col}: Found {dot_zero_count} SKUs with .0 suffix (may cause merge issues)"
+                    )
+        
+        if self.verbose and (validation_results['warnings'] or validation_results['errors']):
+            print(f"🔍 Validation results for {sheet_type}:")
+            for warning in validation_results['warnings']:
+                print(f"  ⚠️ {warning}")
+            for error in validation_results['errors']:
+                print(f"  ❌ {error}")
+        
+        return validation_results
+    
     def _clean_order_data(self, df):
         """Clean and standardize order data"""
         df = df.copy()
         
-        # Convert date column to datetime
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        # Apply data type standardization first
+        df = self._standardize_data_types(df, 'order')
         
-        # Ensure numeric columns are numeric
-        numeric_columns = ['Order No.', 'Shipment No.', 'Qty in Cases', 'Qty in Eaches']
-        for col in numeric_columns:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+        # Validate standardization
+        validation = self._validate_standardized_data(df, 'order')
+        if not validation['valid']:
+            warnings.warn(f"Order data validation failed: {validation['errors']}")
         
         # Remove rows with missing critical data
         df = df.dropna(subset=['Date', 'Sku Code'])
@@ -346,11 +543,13 @@ class DataLoader:
         """Clean and standardize SKU master data"""
         df = df.copy()
         
-        # Ensure numeric columns are numeric
-        numeric_columns = ['Sku Code', 'Case Config', 'Pallet Fit']
-        for col in numeric_columns:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+        # Apply data type standardization first
+        df = self._standardize_data_types(df, 'sku_master')
+        
+        # Validate standardization
+        validation = self._validate_standardized_data(df, 'sku_master')
+        if not validation['valid']:
+            warnings.warn(f"SKU master validation failed: {validation['errors']}")
         
         # Remove rows with missing critical data
         df = df.dropna(subset=['Sku Code'])
@@ -365,14 +564,8 @@ class DataLoader:
         """Clean and standardize receipt data"""
         df = df.copy()
         
-        # Convert date column to datetime
-        df['Receipt Date'] = pd.to_datetime(df['Receipt Date'], errors='coerce')
-        
-        # Ensure numeric columns are numeric
-        numeric_columns = ['SKU ID', 'Quantity in Cases', 'Quantity in Eaches']
-        for col in numeric_columns:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+        # Apply data type standardization first
+        df = self._standardize_data_types(df, 'receipt')
         
         # Remove rows with missing critical data
         df = df.dropna(subset=['Receipt Date', 'SKU ID'])
@@ -387,17 +580,8 @@ class DataLoader:
         """Clean and standardize inventory data"""
         df = df.copy()
         
-        # Convert date column - handle DD.MM.YYYY format
-        try:
-            df['Calendar Day'] = pd.to_datetime(df['Calendar Day'], format='%d.%m.%Y', errors='coerce')
-        except:
-            df['Calendar Day'] = pd.to_datetime(df['Calendar Day'], errors='coerce')
-        
-        # Ensure numeric columns are numeric
-        numeric_columns = ['SKU ID', 'Total Stock in Cases (In Base Unit of Measure)', 'Total Stock in Pieces (In Base Unit of Measue)']
-        for col in numeric_columns:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+        # Apply data type standardization first
+        df = self._standardize_data_types(df, 'inventory')
         
         # Remove rows with missing critical data
         df = df.dropna(subset=['Calendar Day', 'SKU ID'])
@@ -507,9 +691,10 @@ class DataLoader:
         validation = {
             'total_rows': len(df),
             'unique_skus': df['SKU ID'].nunique(),
-            'unique_sites': df['Site'].nunique(),
             'total_stock_cases': df['Total Stock in Cases (In Base Unit of Measure)'].sum(),
-            'sites': df['Site'].unique().tolist()
+            'total_stock_eaches': df['Total Stock in Pieces (In Base Unit of Measue)'].sum(),
+            'date_range_days': (df['Calendar Day'].max() - df['Calendar Day'].min()).days,
+            'unique_dates': df['Calendar Day'].nunique()
         }
         
         return validation

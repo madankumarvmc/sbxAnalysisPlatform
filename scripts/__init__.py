@@ -14,6 +14,8 @@ from .order_analysis import OrderAnalyzer
 from .sku_analysis import SKUAnalyzer
 from .abc_fms_analysis import ABCFMSAnalyzer
 from .receipt_analysis import ReceiptAnalyzer
+from .inventory_analysis import InventoryAnalyzer
+from .manpower_analysis import ManpowerAnalyzer
 from .excel_generator import ExcelGenerator
 
 __all__ = [
@@ -22,5 +24,7 @@ __all__ = [
     'SKUAnalyzer',
     'ABCFMSAnalyzer',
     'ReceiptAnalyzer',
+    'InventoryAnalyzer',
+    'ManpowerAnalyzer',
     'ExcelGenerator'
 ]

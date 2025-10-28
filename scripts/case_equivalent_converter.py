@@ -63,18 +63,13 @@ class CaseEquivalentConverter:
         enhanced_data = order_data.copy()
         
         if sku_master is not None and not sku_master.empty:
-            # Merge with SKU master to get Case Config and Pallet Fit
-            sku_config = sku_master[['Sku Code', 'Case Config', 'Pallet Fit']].copy()
+            # Merge with SKU master to get Case Config, Pallet Fit, and Category
+            merge_columns = ['Sku Code', 'Case Config', 'Pallet Fit']
+            if 'Category' in sku_master.columns:
+                merge_columns.append('Category')
+            sku_config = sku_master[merge_columns].copy()
             
-            # ✅ FIXED: Handle numeric SKU codes properly
-            # Convert to string and remove .0 suffix if present
-            sku_config['Sku Code'] = sku_config['Sku Code'].astype(str).str.replace(r'\.0$', '', regex=True)
-            enhanced_data['Sku Code'] = enhanced_data['Sku Code'].astype(str).str.replace(r'\.0$', '', regex=True)
-            
-            # ✅ FIXED: Clean whitespace
-            sku_config['Sku Code'] = sku_config['Sku Code'].str.strip()
-            enhanced_data['Sku Code'] = enhanced_data['Sku Code'].str.strip()
-            
+            # ✅ UPDATED: Data is now pre-standardized by data_loader, so direct merge is safe
             enhanced_data = enhanced_data.merge(sku_config, on='Sku Code', how='left')
             
             # Fill missing Case Config and Pallet Fit with defaults

@@ -287,8 +287,8 @@ class OrderAnalyzer:
         for metric in metrics:
             horizontal_percentiles['Max'][metric] = daily_comprehensive[metric].max()
         
-        # Add percentile calculations
-        for percentile in [95, 90, 85]:  # Key percentiles for capacity planning
+        # Add percentile calculations using configured levels
+        for percentile in self.percentile_levels:  # Use configured percentiles
             horizontal_percentiles[f'{percentile}.0%ile'] = {}
             for metric in metrics:
                 horizontal_percentiles[f'{percentile}.0%ile'][metric] = np.percentile(daily_comprehensive[metric], percentile)

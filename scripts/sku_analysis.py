@@ -161,13 +161,9 @@ class SKUAnalyzer:
         
         # Add SKU master data if available
         if self.sku_master is not None:
-            # Convert Sku Code in both dataframes to same type for proper merging
-            sku_metrics['Sku Code'] = sku_metrics['Sku Code'].astype(str)
-            sku_master_clean = self.sku_master.copy()
-            sku_master_clean['Sku Code'] = sku_master_clean['Sku Code'].astype(str)
-            
+            # ✅ UPDATED: Data is now pre-standardized by data_loader, so direct merge is safe
             sku_metrics = sku_metrics.merge(
-                sku_master_clean[['Sku Code', 'Category', 'Case Config', 'Pallet Fit']],
+                self.sku_master[['Sku Code', 'Category', 'Case Config', 'Pallet Fit']],
                 on='Sku Code',
                 how='left'
             )

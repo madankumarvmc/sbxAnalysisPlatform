@@ -89,6 +89,7 @@ class ExcelGenerator:
                 self._create_abc_fms_sheet(writer)
                 self._create_inventory_analysis_sheet(writer)
                 self._create_receipt_analysis_sheet(writer)
+                self._create_manpower_analysis_sheet(writer)
                 self._create_recommendations_sheet(writer)
                 self._create_configuration_sheet(writer)
                 self._create_raw_data_summary(writer)
@@ -602,8 +603,20 @@ class ExcelGenerator:
             if horizontal_percentiles:
                 percentile_data = []
                 
-                # Row order matching the target image
-                row_order = ['Max', '95.0%ile', '90.0%ile', '85.0%ile', 'Average']
+                # ✅ FIXED: Dynamically build row order from available percentiles
+                # Always start with Max and end with Average if they exist
+                row_order = []
+                if 'Max' in horizontal_percentiles:
+                    row_order.append('Max')
+                
+                # Add all configured percentiles in descending order
+                percentile_keys = [k for k in horizontal_percentiles.keys() if k.endswith('%ile')]
+                # Sort percentiles numerically in descending order (95, 90, 85, etc.)
+                percentile_keys.sort(key=lambda x: float(x.replace('.0%ile', '')), reverse=True)
+                row_order.extend(percentile_keys)
+                
+                if 'Average' in horizontal_percentiles:
+                    row_order.append('Average')
                 
                 for percentile_name in row_order:
                     if percentile_name in horizontal_percentiles:
@@ -721,19 +734,31 @@ class ExcelGenerator:
         
         # Category analysis if available
         category_analysis = sku_results.get('category_analysis', {})
+        category_start_col = len(sku_df_limited.columns) + 2
+        category_end_row = 0
+        
         if 'category_summary' in category_analysis:
             category_df = category_analysis['category_summary']
-            category_df.to_excel(writer, sheet_name='SKU_Analysis', startcol=len(sku_df_limited.columns) + 2, index=False)
+            category_df.to_excel(writer, sheet_name='SKU_Analysis', startcol=category_start_col, index=False)
+            category_end_row = len(category_df) + 1  # +1 for header
         
-        # Velocity analysis
+        # Velocity analysis - positioned below Category analysis if available, otherwise below SKU details
         velocity_analysis = sku_results.get('velocity_analysis', {})
         if 'velocity_summary' in velocity_analysis:
             velocity_df = velocity_analysis['velocity_summary']
-            start_row = len(sku_df_limited) + 3
-            velocity_df.to_excel(writer, sheet_name='SKU_Analysis', startrow=start_row, index=False)
+            if category_end_row > 0:
+                # Position below category analysis
+                start_row = category_end_row + 2
+                start_col = category_start_col
+            else:
+                # Fallback: position below SKU details if no category analysis
+                start_row = len(sku_df_limited) + 3
+                start_col = 0
+            
+            velocity_df.to_excel(writer, sheet_name='SKU_Analysis', startrow=start_row, startcol=start_col, index=False)
     
     def _create_abc_fms_sheet(self, writer):
-        """Create ABC-FMS analysis sheet"""
+        """Create ABC-FMS analysis sheet with comprehensive cross-tabulation matrices"""
         if 'abc_fms_analysis' not in self.analysis_results:
             return
         
@@ -741,20 +766,126 @@ class ExcelGenerator:
             print("Creating ABC-FMS Analysis sheet...")
         
         abc_results = self.analysis_results['abc_fms_analysis']
+        current_row = 0
         
-        # SKU classifications
+        # SKU classifications (limited for Excel performance) - LEFT SIDE
         sku_classifications = abc_results.get('sku_classifications', {})
+        sku_df_limited = None
+        
         if 'sku_with_classifications' in sku_classifications:
             sku_df = sku_classifications['sku_with_classifications']
             # Limit to top 1000 for Excel performance
             sku_df_limited = sku_df.head(1000)
-            sku_df_limited.to_excel(writer, sheet_name='ABC_FMS_Analysis', index=False)
+            self._write_dataframe_with_title(writer, 'ABC_FMS_Analysis', 
+                                           "SKU Classifications (Top 1000)", 
+                                           sku_df_limited, 
+                                           current_row, 0)
         
-        # Cross-tabulation matrix
+        # ✅ NEW: Side-by-side matrix layout (absolute numbers left, percentages right) - RIGHT SIDE
         cross_tab = abc_results.get('cross_tabulation', {})
+        matrix_start_col = len(sku_df_limited.columns) + 3 if sku_df_limited is not None else 15
+        matrix_current_row = 0
+        
+        if cross_tab:
+            # Define column offset for percentage matrices (right side of each pair)
+            matrix_spacing = 7  # Space between absolute and percentage matrix
+            
+            # 1. SKU matrices side-by-side: SKU (#) on left, SKU% on right
+            if 'class_of_sku_matrix' in cross_tab and 'sku_percent_matrix' in cross_tab:
+                # Left: SKU (#) - Raw counts
+                self._write_matrix_with_title(writer, 'ABC_FMS_Analysis', 
+                                            "SKU (#)", 
+                                            cross_tab['class_of_sku_matrix'], 
+                                            matrix_current_row, matrix_start_col, number_format='0')
+                
+                # Right: SKU% - Percentages
+                self._write_matrix_with_title(writer, 'ABC_FMS_Analysis', 
+                                            "SKU%", 
+                                            cross_tab['sku_percent_matrix'], 
+                                            matrix_current_row, matrix_start_col + matrix_spacing, number_format='0')
+                
+                matrix_current_row += len(cross_tab['class_of_sku_matrix']) + 3
+            
+            # 2. Volume matrices side-by-side: Volume (#) on left, Volume% on right
+            if 'volume_abs_matrix' in cross_tab and 'volume_percent_matrix' in cross_tab:
+                # Left: Volume (#) - Absolute volume
+                self._write_matrix_with_title(writer, 'ABC_FMS_Analysis', 
+                                            "Volume (#)", 
+                                            cross_tab['volume_abs_matrix'], 
+                                            matrix_current_row, matrix_start_col, number_format='0')
+                
+                # Right: Volume% - Volume percentages
+                self._write_matrix_with_title(writer, 'ABC_FMS_Analysis', 
+                                            "Volume%", 
+                                            cross_tab['volume_percent_matrix'], 
+                                            matrix_current_row, matrix_start_col + matrix_spacing, number_format='0')
+                
+                matrix_current_row += len(cross_tab['volume_abs_matrix']) + 3
+            
+            # 3. Lines matrices side-by-side: Lines (#) on left, Lines% on right
+            if 'lines_abs_matrix' in cross_tab and 'lines_percent_matrix' in cross_tab:
+                # Left: Lines (#) - Absolute line counts
+                self._write_matrix_with_title(writer, 'ABC_FMS_Analysis', 
+                                            "Lines (#)", 
+                                            cross_tab['lines_abs_matrix'], 
+                                            matrix_current_row, matrix_start_col, number_format='0')
+                
+                # Right: Lines% - Line percentages
+                self._write_matrix_with_title(writer, 'ABC_FMS_Analysis', 
+                                            "Lines%", 
+                                            cross_tab['lines_percent_matrix'], 
+                                            matrix_current_row, matrix_start_col + matrix_spacing, number_format='0')
+                
+                matrix_current_row += len(cross_tab['lines_abs_matrix']) + 3
+        
+        # ✅ NEW: SKU Profile - Category Level Details (below the side-by-side matrices)
+        if 'category_sku_matrix' in cross_tab and 'category_volume_pct_matrix' in cross_tab and 'category_lines_pct_matrix' in cross_tab:
+            category_start_row = matrix_current_row + 2
+            
+            # Add section header
+            section_header_df = pd.DataFrame([['SKU Profile - Category Level Details']], columns=[''])
+            section_header_df.to_excel(writer, sheet_name='ABC_FMS_Analysis', 
+                                     startrow=category_start_row, 
+                                     startcol=matrix_start_col, 
+                                     index=False, header=False)
+            
+            category_start_row += 2
+            
+            # 1. # SKUs table - SKU count by Category vs ABC-FMS Segment
+            self._write_matrix_with_title(writer, 'ABC_FMS_Analysis',
+                                         "# SKUs",
+                                         cross_tab['category_sku_matrix'],
+                                         category_start_row, matrix_start_col, number_format='0')
+            
+            category_start_row += len(cross_tab['category_sku_matrix']) + 4
+            
+            # 2. Cases % table - Volume percentage by Category vs ABC-FMS Segment
+            self._write_matrix_with_title(writer, 'ABC_FMS_Analysis',
+                                         "Cases %",
+                                         cross_tab['category_volume_pct_matrix'],
+                                         category_start_row, matrix_start_col, number_format='0')
+            
+            category_start_row += len(cross_tab['category_volume_pct_matrix']) + 4
+            
+            # 3. Lines % table - Order lines percentage by Category vs ABC-FMS Segment
+            self._write_matrix_with_title(writer, 'ABC_FMS_Analysis',
+                                         "Lines %",
+                                         cross_tab['category_lines_pct_matrix'],
+                                         category_start_row, matrix_start_col, number_format='0')
+            
+            matrix_current_row = category_start_row + len(cross_tab['category_lines_pct_matrix']) + 3
+        
+        # Continue with other sections below the SKU classifications
+        current_row = len(sku_df_limited) + 5 if sku_df_limited is not None else matrix_current_row + 3
+        
+        # Detailed segment analysis
         if 'segment_details' in cross_tab:
             segment_df = cross_tab['segment_details']
-            segment_df.to_excel(writer, sheet_name='ABC_FMS_Analysis', startcol=len(sku_df_limited.columns) + 2, index=False)
+            self._write_dataframe_with_title(writer, 'ABC_FMS_Analysis', 
+                                           "Segment Details", 
+                                           segment_df, 
+                                           current_row, 0)
+            current_row += len(segment_df) + 3
         
         # Strategic recommendations
         strategic_recs = abc_results.get('strategic_recommendations', {})
@@ -770,27 +901,194 @@ class ExcelGenerator:
             
             if recs_data:
                 recs_df = pd.DataFrame(recs_data, columns=['Segment', 'Priority', 'Recommendation', 'Actions'])
-                start_row = len(sku_df_limited) + 3
-                recs_df.to_excel(writer, sheet_name='ABC_FMS_Analysis', startrow=start_row, index=False)
+                self._write_dataframe_with_title(writer, 'ABC_FMS_Analysis', 
+                                               "Strategic Recommendations", 
+                                               recs_df, 
+                                               current_row, 0)
+    
+    def _write_matrix_with_title(self, writer, sheet_name, title, matrix, start_row, start_col, number_format='0.00'):
+        """Write a matrix with a title using simple DataFrame approach"""
+        
+        # Create title row
+        title_df = pd.DataFrame([[title]], columns=[''])
+        title_df.to_excel(writer, sheet_name=sheet_name, startrow=start_row, 
+                         startcol=start_col, index=False, header=False)
+        
+        # Write matrix with index and header  
+        matrix.to_excel(writer, sheet_name=sheet_name, startrow=start_row + 2, 
+                       startcol=start_col, index=True)
+    
+    def _write_dataframe_with_title(self, writer, sheet_name, title, df, start_row, start_col):
+        """Write a dataframe with a title using simple DataFrame approach"""
+        
+        # Create title row
+        title_df = pd.DataFrame([[title]], columns=[''])
+        title_df.to_excel(writer, sheet_name=sheet_name, startrow=start_row, 
+                         startcol=start_col, index=False, header=False)
+        
+        # Write dataframe starting from next row
+        df.to_excel(writer, sheet_name=sheet_name, startrow=start_row + 2, 
+                   startcol=start_col, index=False)
     
     def _create_inventory_analysis_sheet(self, writer):
-        """Create inventory analysis sheet (placeholder for future implementation)"""
+        """Create inventory analysis sheet with SKU matrix and daily summary"""
+        if 'inventory_analysis' not in self.analysis_results:
+            # Create placeholder if no inventory analysis results
+            if self.verbose:
+                print("Creating Inventory Analysis sheet (no data available)...")
+            placeholder_df = pd.DataFrame([
+                ['Inventory Analysis', 'No inventory data available'],
+                ['Status', 'Please ensure InventoryData sheet is present in uploaded file']
+            ], columns=['Item', 'Value'])
+            placeholder_df.to_excel(writer, sheet_name='Inventory_Analysis', index=False)
+            return
+        
         if self.verbose:
             print("Creating Inventory Analysis sheet...")
         
-        # Placeholder data - in future this would contain actual inventory analysis
-        placeholder_data = [
-            ['Inventory Analysis', 'Status'],
-            ['Module', 'Available in future version'],
-            ['Description', 'Stock levels, reorder points, safety stock analysis'],
-            ['Implementation', 'Planned for next release']
-        ]
+        inventory_results = self.analysis_results['inventory_analysis']
         
-        placeholder_df = pd.DataFrame(placeholder_data, columns=['Item', 'Value'])
-        placeholder_df.to_excel(writer, sheet_name='Inventory_Analysis', index=False)
+        # Get the SKU inventory matrix and daily summary
+        sku_matrix = inventory_results.get('sku_inventory_matrix')
+        daily_summary = inventory_results.get('daily_summary')
+        
+        if sku_matrix is not None and not sku_matrix.empty:
+            # Write SKU inventory matrix (main table on left)
+            sku_matrix.to_excel(writer, sheet_name='Inventory_Analysis', 
+                              startrow=0, startcol=0, index=False)
+            
+            # Calculate position for daily summary table (to the right)
+            # Add 2 columns of spacing after the SKU matrix
+            right_col_start = len(sku_matrix.columns) + 2
+            
+            if daily_summary is not None and not daily_summary.empty:
+                # Write daily summary table to the right
+                daily_summary.to_excel(writer, sheet_name='Inventory_Analysis',
+                                     startrow=0, startcol=right_col_start, index=False)
+                
+                if self.verbose:
+                    print(f"  Created inventory analysis with {len(sku_matrix)} SKUs")
+                    print(f"  Daily summary placed at column {right_col_start}")
+        else:
+            # No inventory data to display
+            if self.verbose:
+                print("  No inventory matrix data available")
+            placeholder_df = pd.DataFrame([
+                ['Inventory Analysis', 'No data to display'],
+                ['Note', 'Inventory data may be missing or filtered out']
+            ], columns=['Item', 'Value'])
+            placeholder_df.to_excel(writer, sheet_name='Inventory_Analysis', index=False)
+    
+    def _create_manpower_analysis_sheet(self, writer):
+        """Create manpower analysis sheet with placeholder data"""
+        if 'manpower_analysis' not in self.analysis_results:
+            # Create placeholder if no manpower analysis results
+            if self.verbose:
+                print("Creating Manpower Analysis sheet (no data available)...")
+            placeholder_df = pd.DataFrame([
+                ['Manpower Analysis', 'No analysis performed'],
+                ['Status', 'Order or receipt data required for manpower analysis'],
+                ['Implementation', 'Placeholder - full implementation pending']
+            ], columns=['Item', 'Value'])
+            placeholder_df.to_excel(writer, sheet_name='Manpower_Analysis', index=False)
+            return
+        
+        if self.verbose:
+            print("Creating Manpower Analysis sheet...")
+        
+        manpower_results = self.analysis_results['manpower_analysis']
+        current_row = 0
+        
+        # Section 1: Picking Analysis
+        picking_analysis = manpower_results.get('picking_analysis', {})
+        if picking_analysis:
+            # Add section header
+            header_df = pd.DataFrame([['PICKING MANPOWER ANALYSIS']], columns=['Section'])
+            header_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
+            current_row += 2
+            
+            # Create picking analysis data
+            picking_data = []
+            for key, value in picking_analysis.items():
+                if key != 'notes':
+                    picking_data.append([key.replace('_', ' ').title(), str(value)])
+            
+            if picking_data:
+                picking_df = pd.DataFrame(picking_data, columns=['Metric', 'Value'])
+                picking_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
+                current_row += len(picking_df) + 3
+        
+        # Section 2: Receiving Analysis
+        receiving_analysis = manpower_results.get('receiving_analysis', {})
+        if receiving_analysis:
+            # Add section header
+            header_df = pd.DataFrame([['RECEIVING & PUTAWAY MANPOWER ANALYSIS']], columns=['Section'])
+            header_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
+            current_row += 2
+            
+            # Create receiving analysis data
+            receiving_data = []
+            for key, value in receiving_analysis.items():
+                if key != 'notes':
+                    receiving_data.append([key.replace('_', ' ').title(), str(value)])
+            
+            if receiving_data:
+                receiving_df = pd.DataFrame(receiving_data, columns=['Metric', 'Value'])
+                receiving_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
+                current_row += len(receiving_df) + 3
+        
+        # Section 3: Loading Analysis
+        loading_analysis = manpower_results.get('loading_analysis', {})
+        if loading_analysis:
+            # Add section header
+            header_df = pd.DataFrame([['LOADING MANPOWER ANALYSIS']], columns=['Section'])
+            header_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
+            current_row += 2
+            
+            # Create loading analysis data
+            loading_data = []
+            for key, value in loading_analysis.items():
+                if key != 'notes':
+                    loading_data.append([key.replace('_', ' ').title(), str(value)])
+            
+            if loading_data:
+                loading_df = pd.DataFrame(loading_data, columns=['Metric', 'Value'])
+                loading_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
+                current_row += len(loading_df) + 3
+        
+        # Section 4: Efficiency Summary
+        efficiency_summary = manpower_results.get('efficiency_summary', {})
+        if efficiency_summary:
+            # Add section header
+            header_df = pd.DataFrame([['EFFICIENCY SUMMARY & RECOMMENDATIONS']], columns=['Section'])
+            header_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
+            current_row += 2
+            
+            # Create efficiency summary data
+            efficiency_data = []
+            for key, value in efficiency_summary.items():
+                if key not in ['optimization_opportunities', 'cost_analysis', 'notes']:
+                    efficiency_data.append([key.replace('_', ' ').title(), str(value)])
+            
+            if efficiency_data:
+                efficiency_df = pd.DataFrame(efficiency_data, columns=['Metric', 'Value'])
+                efficiency_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
+                current_row += len(efficiency_df) + 2
+            
+            # Add optimization opportunities
+            if 'optimization_opportunities' in efficiency_summary:
+                header_df = pd.DataFrame([['OPTIMIZATION OPPORTUNITIES']], columns=['Section'])
+                header_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
+                current_row += 2
+                
+                opportunities = efficiency_summary['optimization_opportunities']
+                if opportunities:
+                    opp_data = [[f"{i+1}. {opp}"] for i, opp in enumerate(opportunities)]
+                    opp_df = pd.DataFrame(opp_data, columns=['Recommendations'])
+                    opp_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
     
     def _create_receipt_analysis_sheet(self, writer):
-        """Create receipt analysis sheet"""
+        """Create receipt analysis sheet - daily patterns with percentile analysis on the right"""
         if 'receipt_analysis' not in self.analysis_results:
             return
         
@@ -799,25 +1097,61 @@ class ExcelGenerator:
         
         receipt_results = self.analysis_results['receipt_analysis']
         
-        # Daily patterns
+        # Daily patterns on the left
         daily_patterns = receipt_results.get('daily_patterns', {})
         if 'daily_data' in daily_patterns:
             daily_df = daily_patterns['daily_data']
-            daily_df.to_excel(writer, sheet_name='Receipt_Analysis', index=False)
-        
-        # Supplier performance
-        supplier_performance = receipt_results.get('supplier_performance', {})
-        if 'truck_details' in supplier_performance:
-            truck_df = supplier_performance['truck_details']
-            # Limit to top 100 trucks
-            truck_df_limited = truck_df.head(100)
-            truck_df_limited.to_excel(writer, sheet_name='Receipt_Analysis', startcol=len(daily_df.columns) + 2, index=False)
-        
-        # Performance summary
-        if 'performance_summary' in supplier_performance:
-            perf_df = supplier_performance['performance_summary']
-            start_row = len(daily_df) + 3
-            perf_df.to_excel(writer, sheet_name='Receipt_Analysis', startrow=start_row, index=False)
+            daily_df.to_excel(writer, sheet_name='Receipt_Analysis', startrow=0, startcol=0, index=False)
+            
+            # Calculate the right column position (after daily patterns table + some spacing)
+            right_col_start = len(daily_df.columns) + 2
+            
+            # Percentile Analysis on the right
+            percentile_analysis = receipt_results.get('percentile_analysis', {})
+            if percentile_analysis:
+                current_row = 0
+                
+                # Header for percentile analysis
+                perc_header = pd.DataFrame([['RECEIPT PERCENTILE ANALYSIS']], columns=['Header'])
+                perc_header.to_excel(writer, sheet_name='Receipt_Analysis', startrow=current_row, startcol=right_col_start, index=False, header=False)
+                current_row += 2
+                
+                # Column headers for percentile table
+                headers = pd.DataFrame([['Percentile', '#Trucks', '#Shipments', '#Lines', '#SKUs', '#Cases']], 
+                                     columns=['Percentile', '#Trucks', '#Shipments', '#Lines', '#SKUs', '#Cases'])
+                headers.to_excel(writer, sheet_name='Receipt_Analysis', startrow=current_row, startcol=right_col_start, index=False, header=False)
+                current_row += 1
+                
+                # Get horizontal percentile data
+                horizontal_percentiles = percentile_analysis.get('horizontal_percentiles', {})
+                
+                if horizontal_percentiles:
+                    percentile_data = []
+                    
+                    # Build row order from available percentiles
+                    row_order = []
+                    if 'Max' in horizontal_percentiles:
+                        row_order.append('Max')
+                    
+                    # Add all configured percentiles in descending order
+                    percentile_keys = [k for k in horizontal_percentiles.keys() if k.endswith('%ile')]
+                    percentile_keys.sort(key=lambda x: float(x.replace('%ile', '')), reverse=True)
+                    row_order.extend(percentile_keys)
+                    
+                    for percentile_name in row_order:
+                        if percentile_name in horizontal_percentiles:
+                            row_data = horizontal_percentiles[percentile_name]
+                            percentile_data.append([
+                                percentile_name,
+                                int(row_data.get('#Trucks', 0)),
+                                int(row_data.get('#Shipments', 0)), 
+                                int(row_data.get('#Lines', 0)),
+                                int(row_data.get('#SKUs', 0)),
+                                int(row_data.get('#Cases', 0))
+                            ])
+                    
+                    perc_df = pd.DataFrame(percentile_data, columns=['Percentile', '#Trucks', '#Shipments', '#Lines', '#SKUs', '#Cases'])
+                    perc_df.to_excel(writer, sheet_name='Receipt_Analysis', startrow=current_row, startcol=right_col_start, index=False, header=False)
     
     def _create_recommendations_sheet(self, writer):
         """Create consolidated recommendations sheet"""

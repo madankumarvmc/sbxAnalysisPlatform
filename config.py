@@ -56,7 +56,6 @@ RECEIPT_COLUMNS = {
 # InventoryData sheet columns
 INVENTORY_COLUMNS = {
     'calendar_day': 'Calendar Day',
-    'site': 'Site',
     'sku_id': 'SKU ID',
     'sku_name': 'SKU Name',
     'stock_cases': 'Total Stock in Cases (In Base Unit of Measure)',
@@ -102,6 +101,25 @@ DEFAULT_MANPOWER_PARAMS = {
     'WORKING_DAYS_PER_WEEK': 5
 }
 
+# Default manpower analysis parameters for timing studies
+DEFAULT_MANPOWER_ANALYSIS_PARAMS = {
+    'picking': {
+        'avg_walk_distance_per_pallet': 50.0,    # meters
+        'scan_time': 3.0,                        # seconds
+        'qty_pick_time': 2.0,                    # seconds
+        'misc_time_per_pallet': 30.0             # seconds
+    },
+    'receiving_putaway': {
+        'unloading_time_per_case': 5.0,          # seconds
+        'avg_walk_distance_per_pallet': 40.0,    # meters
+        'scan_time': 3.0,                        # seconds
+        'misc_time': 20.0                        # seconds
+    },
+    'loading': {
+        'loading_time_per_case': 4.0             # seconds
+    }
+}
+
 # =============================================================================
 # VALIDATION SETTINGS
 # =============================================================================
@@ -126,6 +144,7 @@ OUTPUT_SHEET_NAMES = {
     'ABC_FMS_ANALYSIS': 'ABC_FMS_Analysis',
     'INVENTORY_ANALYSIS': 'Inventory_Analysis',
     'RECEIPT_ANALYSIS': 'Receipt_Analysis',
+    'MANPOWER_ANALYSIS': 'Manpower_Analysis',
     'VARIABLE_CONFIG': 'Variable_Configuration',
     'RAW_DATA_SUMMARY': 'Raw_Data_Summary'
 }
@@ -157,6 +176,9 @@ def get_variable_defaults():
             'vip_customer_threshold': 50,
             'seasonal_adjustment': False,
         },
+        'receipt_analysis': {
+            'percentile_levels': DEFAULT_PERCENTILE_LEVELS.copy(),
+        },
         'inventory_analysis': {
             'safety_stock_days': DEFAULT_INVENTORY_PARAMS['SAFETY_STOCK_DAYS'],
             'reorder_point_days': DEFAULT_INVENTORY_PARAMS['REORDER_POINT_DAYS'],
@@ -168,6 +190,9 @@ def get_variable_defaults():
             'standard_pick_rate': DEFAULT_MANPOWER_PARAMS['STANDARD_PICK_RATE'],
             'shifts_per_day': DEFAULT_MANPOWER_PARAMS['SHIFTS_PER_DAY'],
             'break_time_minutes': DEFAULT_MANPOWER_PARAMS['BREAK_TIME_MINUTES'],
+            'picking': DEFAULT_MANPOWER_ANALYSIS_PARAMS['picking'].copy(),
+            'receiving_putaway': DEFAULT_MANPOWER_ANALYSIS_PARAMS['receiving_putaway'].copy(),
+            'loading': DEFAULT_MANPOWER_ANALYSIS_PARAMS['loading'].copy()
         }
     }
 
@@ -233,12 +258,13 @@ def create_analysis_config(streamlit_variables):
             'M_THRESHOLD': streamlit_variables.get('order_analysis', {}).get('fms_medium_threshold', 90.0)
         },
         'PERCENTILE_LEVELS': streamlit_variables.get('order_analysis', {}).get('percentile_levels', [95, 90, 85, 80, 75]),
+        'RECEIPT_PERCENTILE_LEVELS': streamlit_variables.get('receipt_analysis', {}).get('percentile_levels', [95, 90, 85, 80, 75]),
         'DATE_RANGE': {
             'START_DATE': None,
             'END_DATE': None
         },
         'INVENTORY_PARAMS': streamlit_variables.get('inventory_analysis', DEFAULT_INVENTORY_PARAMS),
-        'MANPOWER_PARAMS': streamlit_variables.get('manpower_analysis', DEFAULT_MANPOWER_PARAMS),
+        'MANPOWER_PARAMS': streamlit_variables.get('manpower_analysis', DEFAULT_MANPOWER_PARAMS.copy()),
         'OUTPUT_SETTINGS': {
             'CURRENCY_SYMBOL': streamlit_variables.get('global', {}).get('currency_symbol', '$'),
             'DECIMAL_PLACES': streamlit_variables.get('global', {}).get('decimal_places', 2),

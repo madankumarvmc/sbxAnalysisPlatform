@@ -95,6 +95,7 @@ class ABCFMSAnalyzer:
             'data_summary': self._get_data_summary(),
             'sku_classifications': self.perform_dual_classification(),
             'cross_tabulation': self.create_cross_tabulation_matrix(),
+            'category_cross_tabulation': self.create_category_abc_fms_matrix(),
             'segment_analysis': self.analyze_segments(),
             'strategic_recommendations': self.generate_strategic_recommendations(),
             'warehouse_layout': self.recommend_warehouse_layout(),
@@ -142,15 +143,16 @@ class ABCFMSAnalyzer:
         
         # Add SKU master data if available
         if self.sku_master is not None:
-            sku_metrics['Sku Code'] = sku_metrics['Sku Code'].astype(str)
-            sku_master_clean = self.sku_master.copy()
-            sku_master_clean['Sku Code'] = sku_master_clean['Sku Code'].astype(str)
-            
+            # ✅ UPDATED: Data is now pre-standardized by data_loader, so direct merge is safe
             sku_metrics = sku_metrics.merge(
-                sku_master_clean[['Sku Code', 'Category', 'Case Config', 'Pallet Fit']],
+                self.sku_master[['Sku Code', 'Category', 'Case Config', 'Pallet Fit']],
                 on='Sku Code',
                 how='left'
             )
+            
+            # Fill missing values with defaults
+            sku_metrics['Case Config'] = sku_metrics['Case Config'].fillna(1)
+            sku_metrics['Pallet Fit'] = sku_metrics['Pallet Fit'].fillna(1)
         
         # ABC Classification (Volume-based) - Using Case Equivalent Volume as primary metric
         sku_metrics = sku_metrics.sort_values('Total_Case_Equivalent_Volume', ascending=False).reset_index(drop=True)
@@ -188,11 +190,11 @@ class ABCFMSAnalyzer:
         
         def classify_fms(cumulative_percent):
             if cumulative_percent <= self.fms_thresholds['F_THRESHOLD']:
-                return 'Fast'
+                return 'F'
             elif cumulative_percent <= self.fms_thresholds['M_THRESHOLD']:
-                return 'Medium'
+                return 'M'
             else:
-                return 'Slow'
+                return 'S'
         
         sku_metrics_freq['FMS_Category'] = sku_metrics_freq['Frequency_Cumulative_Percent'].apply(classify_fms)
         
@@ -242,13 +244,59 @@ class ABCFMSAnalyzer:
             aggfunc='count'
         ).fillna(0)
         
-        # Create volume cross-tabulation using case equivalent volume as primary metric
+        # Create volume cross-tabulation using case equivalent volume as primary metric (rounded to integers)
         volume_cross_tab = pd.crosstab(
             self.sku_classifications['ABC_Category'],
             self.sku_classifications['FMS_Category'],
             values=self.sku_classifications['Total_Case_Equivalent_Volume'],
             aggfunc='sum'
-        ).fillna(0)
+        ).fillna(0).round(0)
+        
+        # Create order lines cross-tabulation (rounded to integers)
+        lines_cross_tab = pd.crosstab(
+            self.sku_classifications['ABC_Category'],
+            self.sku_classifications['FMS_Category'],
+            values=self.sku_classifications['Total_Order_Lines'],
+            aggfunc='sum'
+        ).fillna(0).round(0)
+        
+        # ✅ NEW: Create comprehensive percentage matrices (like the screenshot format)
+        
+        # 1. SKU% Matrix - Percentage distribution of SKUs (rounded to integers)
+        sku_pct_matrix = (cross_tab.div(cross_tab.sum().sum()) * 100).round(0)
+        
+        # 2. Volume% Matrix - Percentage distribution of case equivalent volume (rounded to integers)
+        volume_pct_matrix = (volume_cross_tab.div(volume_cross_tab.sum().sum()) * 100).round(0)
+        
+        # 3. Lines% Matrix - Percentage distribution of order lines (rounded to integers)
+        lines_pct_matrix = (lines_cross_tab.div(lines_cross_tab.sum().sum()) * 100).round(0)
+        
+        # Add row and column totals to matrices for completeness
+        def add_totals_to_matrix(matrix, title):
+            """Add Grand Total row and column to a matrix"""
+            matrix_with_totals = matrix.copy()
+            
+            # Add column totals (Grand Total column)
+            matrix_with_totals['Grand Total'] = matrix_with_totals.sum(axis=1)
+            
+            # Add row totals (Grand Total row)
+            grand_total_row = matrix_with_totals.sum(axis=0)
+            grand_total_row.name = 'Grand Total'
+            matrix_with_totals = pd.concat([matrix_with_totals, grand_total_row.to_frame().T])
+            
+            # For percentage matrices, ensure Grand Total bottom-right is exactly 100
+            if 'percent' in title.lower() or '%' in title:
+                matrix_with_totals.loc['Grand Total', 'Grand Total'] = 100
+            
+            return matrix_with_totals
+        
+        # Apply totals to all matrices
+        cross_tab_with_totals = add_totals_to_matrix(cross_tab, 'Class of SKU (#)')
+        volume_cross_tab_with_totals = add_totals_to_matrix(volume_cross_tab, 'Volume')
+        lines_cross_tab_with_totals = add_totals_to_matrix(lines_cross_tab, 'Lines')
+        sku_pct_matrix_with_totals = add_totals_to_matrix(sku_pct_matrix, 'SKU%')
+        volume_pct_matrix_with_totals = add_totals_to_matrix(volume_pct_matrix, 'Volume%')
+        lines_pct_matrix_with_totals = add_totals_to_matrix(lines_pct_matrix, 'Lines%')
         
         # Keep legacy volume cross-tabulation for comparison
         volume_cross_tab_legacy = pd.crosstab(
@@ -302,13 +350,140 @@ class ABCFMSAnalyzer:
         segment_details = segment_details.sort_values('Total_Case_Equivalent_Volume', ascending=False)
         
         self.cross_tabulation = {
+            # Basic matrices (raw numbers)
             'sku_matrix': cross_tab,
             'volume_matrix': volume_cross_tab,
+            'lines_matrix': lines_cross_tab,
             'volume_matrix_legacy': volume_cross_tab_legacy,
+            
+            # Comprehensive analysis matrices (with totals - matching screenshot format)
+            'class_of_sku_matrix': cross_tab_with_totals,
+            'volume_abs_matrix': volume_cross_tab_with_totals,
+            'lines_abs_matrix': lines_cross_tab_with_totals,
+            'sku_percent_matrix': sku_pct_matrix_with_totals,
+            'volume_percent_matrix': volume_pct_matrix_with_totals,
+            'lines_percent_matrix': lines_pct_matrix_with_totals,
+            
+            # Detailed segment analysis
             'segment_details': segment_details
         }
         
         return self.cross_tabulation
+    
+    def create_category_abc_fms_matrix(self):
+        """
+        Create Category vs ABC-FMS cross-tabulation matrices.
+        
+        Returns:
+            dict: Category-based cross-tabulation analysis results
+        """
+        print("📊 Creating Category vs ABC-FMS cross-tabulation matrices...")
+        
+        if self.sku_classifications is None:
+            self.perform_dual_classification()
+        
+        # Check if Category column exists
+        if 'Category' not in self.sku_classifications.columns:
+            print("⚠️ Category column not available in SKU classifications")
+            return {}
+        
+        # Replace NaN categories with 'Unknown'
+        self.sku_classifications['Category'] = self.sku_classifications['Category'].fillna('Unknown')
+        
+        # Create SKU count cross-tabulation (Category vs ABC-FMS Segment)
+        category_sku_matrix = pd.crosstab(
+            self.sku_classifications['Category'],
+            self.sku_classifications['ABC_FMS_Segment'],
+            values=self.sku_classifications['Sku Code'],
+            aggfunc='count'
+        ).fillna(0).astype(int)
+        
+        # Create volume cross-tabulation (Category vs ABC-FMS Segment) - using Case Equivalent Volume
+        category_volume_matrix = pd.crosstab(
+            self.sku_classifications['Category'],
+            self.sku_classifications['ABC_FMS_Segment'],
+            values=self.sku_classifications['Total_Case_Equivalent_Volume'],
+            aggfunc='sum'
+        ).fillna(0)
+        
+        # Create lines cross-tabulation (Category vs ABC-FMS Segment)
+        category_lines_matrix = pd.crosstab(
+            self.sku_classifications['Category'],
+            self.sku_classifications['ABC_FMS_Segment'],
+            values=self.sku_classifications['Total_Order_Lines'],
+            aggfunc='sum'
+        ).fillna(0)
+        
+        # Ensure all ABC-FMS combinations are present
+        abc_fms_combinations = ['A-F', 'A-M', 'B-F', 'B-M', 'B-S', 'C-F', 'C-M', 'C-S']
+        
+        # Reorder columns to match desired format (AF, AM, BF, BM, BS, CF, CM, CS)
+        for matrix in [category_sku_matrix, category_volume_matrix, category_lines_matrix]:
+            for col in abc_fms_combinations:
+                if col not in matrix.columns:
+                    matrix[col] = 0
+            matrix = matrix[abc_fms_combinations]
+        
+        # Calculate percentage matrices (rounded to integers)
+        category_volume_pct_matrix = (category_volume_matrix.div(category_volume_matrix.sum().sum()) * 100).round(0).astype(int)
+        category_lines_pct_matrix = (category_lines_matrix.div(category_lines_matrix.sum().sum()) * 100).round(0).astype(int)
+        
+        # Add row totals and percentages
+        def add_category_totals(sku_matrix, pct_matrix, title):
+            """Add #SKUs total column and SKU% column to category matrix"""
+            matrix_with_totals = sku_matrix.copy()
+            
+            # Add #SKUs column (row totals)
+            matrix_with_totals['#SKUs'] = matrix_with_totals.sum(axis=1).astype(int)
+            
+            # Add percentage column based on title
+            if 'sku' in title.lower():
+                # For SKU matrix, calculate SKU% distribution
+                total_skus = matrix_with_totals['#SKUs'].sum()
+                matrix_with_totals['SKU %'] = (matrix_with_totals['#SKUs'] / total_skus * 100).round(0).astype(int)
+            else:
+                # For Volume/Lines matrices, use the corresponding percentage matrix
+                row_sums = pct_matrix.sum(axis=1)
+                if 'volume' in title.lower() or 'cases' in title.lower():
+                    matrix_with_totals['% Cases'] = row_sums.astype(int)
+                elif 'lines' in title.lower():
+                    matrix_with_totals['% Lines'] = row_sums.astype(int)
+            
+            # Add Grand Total row
+            grand_total_row = matrix_with_totals.sum(axis=0)
+            grand_total_row.name = 'Grand Total'
+            
+            # Ensure percentage columns sum to 100
+            if 'SKU %' in matrix_with_totals.columns:
+                grand_total_row['SKU %'] = 100
+            if '% Cases' in matrix_with_totals.columns:
+                grand_total_row['% Cases'] = 100
+            if '% Lines' in matrix_with_totals.columns:
+                grand_total_row['% Lines'] = 100
+                
+            matrix_with_totals = pd.concat([matrix_with_totals, grand_total_row.to_frame().T])
+            
+            return matrix_with_totals
+        
+        # Apply totals to all matrices
+        category_sku_with_totals = add_category_totals(category_sku_matrix, None, '# SKUs')
+        category_volume_pct_with_totals = add_category_totals(category_volume_pct_matrix, category_volume_pct_matrix, 'Cases %')
+        category_lines_pct_with_totals = add_category_totals(category_lines_pct_matrix, category_lines_pct_matrix, 'Lines %')
+        
+        # Store results
+        category_cross_tab_results = {
+            'category_sku_matrix': category_sku_with_totals,
+            'category_volume_pct_matrix': category_volume_pct_with_totals,
+            'category_lines_pct_matrix': category_lines_pct_with_totals
+        }
+        
+        # Add to existing cross_tabulation if it exists
+        if hasattr(self, 'cross_tabulation') and self.cross_tabulation:
+            self.cross_tabulation.update(category_cross_tab_results)
+        else:
+            self.cross_tabulation = category_cross_tab_results
+            
+        return category_cross_tab_results
     
     def analyze_segments(self):
         """

@@ -69,8 +69,7 @@ class ReceiptAnalyzer:
         
         # Analysis results containers
         self.daily_patterns = None
-        self.supplier_performance = None
-        self.efficiency_metrics = None
+        self.percentile_analysis = None
         
         print(f"ReceiptAnalyzer initialized with {len(self.receipt_data)} receipt records")
         if self.order_data is not None:
@@ -143,17 +142,8 @@ class ReceiptAnalyzer:
             'analysis_date': datetime.now(),
             'data_summary': self._get_data_summary(),
             'daily_patterns': self.analyze_daily_patterns(),
-            'volume_analysis': self.analyze_volume_trends(),
-            'supplier_performance': self.analyze_supplier_performance(),
-            'efficiency_metrics': self.analyze_receiving_efficiency(),
-            'dock_utilization': self.analyze_dock_utilization(),
-            'sku_receipt_patterns': self.analyze_sku_patterns(),
-            'recommendations': self.generate_recommendations()
+            'percentile_analysis': self.analyze_percentiles()
         }
-        
-        # Add lead time analysis if order data is available
-        if self.order_data is not None:
-            results['lead_time_analysis'] = self.analyze_lead_times()
         
         print("✅ Receipt analysis completed successfully")
         return results
@@ -167,8 +157,17 @@ class ReceiptAnalyzer:
         """
         print("📊 Analyzing daily receipt patterns...")
         
-        # Convert receipt date to datetime if it's not already
-        self.receipt_data['Receipt Date'] = pd.to_datetime(self.receipt_data['Receipt Date'], errors='coerce')
+        # Receipt dates should already be converted by DataLoader, just ensure they're datetime
+        if not pd.api.types.is_datetime64_any_dtype(self.receipt_data['Receipt Date']):
+            print("⚠️ Converting receipt dates to datetime (DataLoader should have handled this)")
+            self.receipt_data['Receipt Date'] = pd.to_datetime(self.receipt_data['Receipt Date'], format='%d.%m.%Y', errors='coerce')
+        
+        # Remove any invalid dates
+        self.receipt_data = self.receipt_data.dropna(subset=['Receipt Date'])
+        
+        print(f"📅 Receipt analysis - Date range: {self.receipt_data['Receipt Date'].min()} to {self.receipt_data['Receipt Date'].max()}")
+        print(f"📅 Receipt analysis - Unique dates: {self.receipt_data['Receipt Date'].nunique()}")
+        print(f"📅 Receipt analysis - Total records: {len(self.receipt_data)}")
         
         # Add case equivalent volume to receipt data
         enhanced_receipt_data = self._add_case_equivalent_to_receipt_data(self.receipt_data)
@@ -220,6 +219,71 @@ class ReceiptAnalyzer:
             'peak_daily_volume': daily_receipts['Daily_Case_Equivalent_Volume'].max(),  # ← UPDATED: Use case equivalent volume
             'peak_daily_cases_legacy': daily_receipts['Daily_Cases'].max()  # ← LEGACY: Keep for backward compatibility
         }
+    
+    def analyze_percentiles(self):
+        """
+        Analyze percentiles for receipt capacity planning.
+        
+        Returns:
+            dict: Percentile analysis results similar to order analysis
+        """
+        print("📊 Analyzing receipt percentiles for capacity planning...")
+        
+        if self.daily_patterns is None:
+            self.analyze_daily_patterns()
+        
+        # Get percentile levels from config (receipt analysis specific)
+        percentile_levels = self.config.get('RECEIPT_PERCENTILE_LEVELS', [95, 90, 85, 80, 75])
+        
+        # Add case equivalent volume to receipt data
+        enhanced_receipt_data = self._add_case_equivalent_to_receipt_data(self.receipt_data)
+        
+        # Create comprehensive daily summary with all required metrics
+        daily_comprehensive = enhanced_receipt_data.groupby('Receipt Date').agg({
+            'Truck No': 'nunique',              # #Trucks
+            'Shipment No': 'nunique',           # #Shipments
+            'SKU ID': 'nunique',                # #SKUs (changed from count to nunique for distinct lines)
+            'Quantity in Cases': 'sum',         # #Cases
+            'Case_Equivalent_Volume': 'sum'     # Case Equivalent Volume
+        }).reset_index()
+        
+        # Count distinct lines (receipt records) per day
+        lines_per_day = enhanced_receipt_data.groupby('Receipt Date').size().reset_index(name='Lines_Count')
+        daily_comprehensive = daily_comprehensive.merge(lines_per_day, on='Receipt Date', how='left')
+        
+        # Rename columns to match the pattern shown in screenshot
+        daily_comprehensive = daily_comprehensive.rename(columns={
+            'Truck No': '#Trucks',
+            'Shipment No': '#Shipments', 
+            'Lines_Count': '#Lines',
+            'SKU ID': '#SKUs',
+            'Quantity in Cases': '#Cases'
+        })
+        
+        # Calculate percentiles for all metrics (for horizontal table like in screenshot)
+        metrics = ['#Trucks', '#Shipments', '#Lines', '#SKUs', '#Cases']
+        
+        horizontal_percentiles = {}
+        
+        # Add max values
+        horizontal_percentiles['Max'] = {}
+        for metric in metrics:
+            horizontal_percentiles['Max'][metric] = daily_comprehensive[metric].max()
+        
+        # Add percentile calculations using configured levels
+        for percentile in percentile_levels:
+            horizontal_percentiles[f'{percentile}%ile'] = {}
+            for metric in metrics:
+                horizontal_percentiles[f'{percentile}%ile'][metric] = int(np.percentile(daily_comprehensive[metric], percentile))
+        
+        # Store the results
+        self.percentile_analysis = {
+            'horizontal_percentiles': horizontal_percentiles,  # For horizontal table like screenshot
+            'daily_comprehensive': daily_comprehensive,       # Store comprehensive daily data
+            'percentile_levels': percentile_levels            # Store which percentiles were calculated
+        }
+        
+        return self.percentile_analysis
     
     def analyze_volume_trends(self):
         """
