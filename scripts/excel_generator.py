@@ -208,6 +208,24 @@ class ExcelGenerator:
             # Add daily data
             daily_df = daily_analysis['daily_data']
             daily_df.to_excel(writer, sheet_name='Order_Analysis', startrow=current_row, index=False)
+            
+            # Add charts using excel_chart_generator
+            from charts.excel_chart_generator import ExcelChartGenerator
+            chart_gen = ExcelChartGenerator(writer.sheets['Order_Analysis'])
+            
+            table_pos = {
+                'row': current_row + 1,  # Excel uses 1-based indexing
+                'col': 1,
+                'num_rows': len(daily_df),
+                'num_cols': len(daily_df.columns)
+            }
+            
+            # Add main trend chart (Orders, Shipments, SKUs)
+            chart_gen.add_order_daily_trend_chart(table_pos)
+            
+            # Add volume trend chart below the first chart
+            chart_gen.add_order_volume_trend_chart(table_pos)
+            
             current_row += len(daily_df) + 3
         
         # Section 2: Enhanced Summary Statistics
@@ -1103,6 +1121,23 @@ class ExcelGenerator:
             daily_df = daily_patterns['daily_data']
             daily_df.to_excel(writer, sheet_name='Receipt_Analysis', startrow=0, startcol=0, index=False)
             
+            # Add receipt charts
+            from charts.excel_chart_generator import ExcelChartGenerator
+            chart_gen = ExcelChartGenerator(writer.sheets['Receipt_Analysis'])
+            
+            table_pos = {
+                'row': 1,  # Excel uses 1-based indexing
+                'col': 1,
+                'num_rows': len(daily_df),
+                'num_cols': len(daily_df.columns)
+            }
+            
+            # Add main receipt trend chart (Lines, Shipments, Trucks)
+            chart_gen.add_receipt_daily_trend_chart(table_pos)
+            
+            # Add volume trend chart below the first chart
+            chart_gen.add_receipt_volume_trend_chart(table_pos)
+            
             # Calculate the right column position (after daily patterns table + some spacing)
             right_col_start = len(daily_df.columns) + 2
             
@@ -1291,7 +1326,7 @@ class ExcelGenerator:
         
         summary_df = pd.DataFrame(summary_data, columns=['Item', 'Value'])
         summary_df.to_excel(writer, sheet_name='Raw_Data_Summary', index=False)
-
+    
 # Test function for standalone execution
 if __name__ == "__main__":
     print("ExcelGenerator module - ready for use")

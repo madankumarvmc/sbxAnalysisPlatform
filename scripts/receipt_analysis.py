@@ -174,15 +174,16 @@ class ReceiptAnalyzer:
         
         # Group by date to get daily summaries
         daily_receipts = enhanced_receipt_data.groupby('Receipt Date').agg({
-            'SKU ID': 'nunique',
+            'SKU ID': ['count', 'nunique'],  # ← NEW: Count of rows (receipt lines) and unique SKUs
             'Shipment No': 'nunique',
             'Truck No': 'nunique',
             'Quantity in Cases': 'sum',
             'Quantity in Eaches': 'sum',
-            'Case_Equivalent_Volume': 'sum'  # ← NEW: Case equivalent volume
+            'Case_Equivalent_Volume': 'sum'  # ← Case equivalent volume
         }).reset_index()
         
-        daily_receipts.columns = ['Date', 'Daily_SKUs', 'Daily_Shipments', 'Daily_Trucks', 'Daily_Cases', 'Daily_Eaches', 'Daily_Case_Equivalent_Volume']
+        # Flatten column names and rename properly
+        daily_receipts.columns = ['Date', 'Daily_Receipt_Lines', 'Daily_SKUs', 'Daily_Shipments', 'Daily_Trucks', 'Daily_Cases', 'Daily_Eaches', 'Daily_Case_Equivalent_Volume']
         
         # Add day of week analysis
         daily_receipts['Day_of_Week'] = daily_receipts['Date'].dt.day_name()

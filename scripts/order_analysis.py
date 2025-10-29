@@ -117,15 +117,16 @@ class OrderAnalyzer:
         
         # Group by date to get daily summaries (including case equivalent volume)
         daily_data = order_data_enhanced.groupby('Date').agg({
-            'Order No.': 'nunique',
+            'Order No.': ['count', 'nunique'],  # ← NEW: Count of rows (order lines) and unique orders
             'Shipment No.': 'nunique', 
             'Sku Code': 'nunique',
             'Qty in Cases': 'sum',
             'Qty in Eaches': 'sum',
-            'Case_Equivalent_Volume': 'sum'  # ← NEW: Case equivalent daily volume
+            'Case_Equivalent_Volume': 'sum'  # ← Case equivalent daily volume
         }).reset_index()
         
-        daily_data.columns = ['Date', 'Daily_Orders', 'Daily_Shipments', 'Daily_SKUs', 'Daily_Cases', 'Daily_Eaches', 'Daily_Case_Equivalent_Volume']
+        # Flatten column names and rename properly
+        daily_data.columns = ['Date', 'Daily_Order_Lines', 'Daily_Orders', 'Daily_Shipments', 'Daily_SKUs', 'Daily_Cases', 'Daily_Eaches', 'Daily_Case_Equivalent_Volume']
         
         # Add day of week analysis
         daily_data['Day_of_Week'] = daily_data['Date'].dt.day_name()

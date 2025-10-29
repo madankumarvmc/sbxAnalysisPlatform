@@ -123,6 +123,7 @@ Thumbs.db
 test_*.py
 debug_*.py
 analyze_test_*.py
+check_*.py
 
 # Temporary files
 *.tmp
@@ -134,6 +135,10 @@ analyze_test_*.py
 # Excel temporary files
 ~$*.xlsx
 ~$*.xls
+
+# Test Excel files
+test_*.xlsx
+debug_*.xlsx
 
 # Output files (preserve Test Data folder)
 output/
