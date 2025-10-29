@@ -1132,11 +1132,11 @@ class ExcelGenerator:
                 'num_cols': len(daily_df.columns)
             }
             
-            # Add main receipt trend chart (Lines, Shipments, Trucks)
-            chart_gen.add_receipt_daily_trend_chart(table_pos)
+            # Add main receipt trend chart (Lines, Shipments, Trucks) - place further right to avoid percentile overlap
+            chart_gen.add_receipt_daily_trend_chart(table_pos, columns_gap=12)
             
             # Add volume trend chart below the first chart
-            chart_gen.add_receipt_volume_trend_chart(table_pos)
+            chart_gen.add_receipt_volume_trend_chart(table_pos, columns_gap=12)
             
             # Calculate the right column position (after daily patterns table + some spacing)
             right_col_start = len(daily_df.columns) + 2
