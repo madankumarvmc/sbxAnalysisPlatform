@@ -9,6 +9,7 @@ Upload your Excel file, configure variables, run analysis, and download comprehe
 import streamlit as st
 import pandas as pd
 import io
+import os
 from datetime import datetime
 import traceback
 
@@ -184,13 +185,13 @@ def show_upload_section():
     
     with col1:
         # Template download button
-        st.markdown("**📄 Need a template?**")
-        if st.button("📥 Download Template", type="secondary", use_container_width=True):
+        st.markdown("**📄 Need sample data?**")
+        if st.button("📥 Download Sample Data", type="secondary", use_container_width=True):
             template_buffer = generate_template_excel()
             st.download_button(
-                label="📄 Download Excel Template",
+                label="📄 Download Sample Excel Data",
                 data=template_buffer,
-                file_name="Warehouse_Data_Template.xlsx",
+                file_name="Sample_Warehouse_Data.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
@@ -838,8 +839,17 @@ def show_download_section():
         """, unsafe_allow_html=True)
 
 def generate_template_excel():
-    """Generate template Excel file (reuse from original app.py)"""
+    """Provide the actual test data file as template"""
     
+    # Path to the test data file
+    test_file_path = "Test Data/ITC_WMS_RAW_DATA.xlsx"
+    
+    # Check if test file exists and return it
+    if os.path.exists(test_file_path):
+        with open(test_file_path, 'rb') as f:
+            return io.BytesIO(f.read())
+    
+    # Fallback to generating sample data if test file not found
     import random
     from datetime import datetime, timedelta
     
