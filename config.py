@@ -103,6 +103,46 @@ DEFAULT_MANPOWER_PARAMS = {
 
 # Default manpower analysis parameters for timing studies
 DEFAULT_MANPOWER_ANALYSIS_PARAMS = {
+    # Complexity mode selection
+    'complexity_mode': 'Simple',  # Options: 'Simple', 'Detailed'
+    
+    # Simplified picking parameters (used in Simple mode)
+    'picking_simplified': {
+        # Volume calculation
+        'percentile_for_planning': 95,           # Use 95th percentile day for planning
+        'average_cases_per_pallet': 100,         # Fixed value for Simple mode
+        
+        # Time parameters
+        'average_time_per_pallet': 30.0,         # minutes
+        
+        # Shift parameters
+        'shift_hours': 8.0,                      # hours per shift
+        'break_time_minutes': 30,                # minutes
+        'shifts_per_day': 1,                     # number of shifts
+        
+        # Efficiency
+        'work_efficiency': 85.0,                 # percentage (0-100)
+    },
+    
+    # Simplified receiving parameters (used in Simple mode)
+    'receiving_simplified': {
+        # Volume calculation
+        'percentile_for_planning': 95,                    # Use 95th percentile day for planning
+        'average_cases_per_pallet': 100,                 # Same as picking (same pallets)
+        
+        # Time parameters (combined operations)
+        'unloading_putaway_time_per_pallet': 45.0,       # minutes (unloading + scanning + putaway)
+        
+        # Shift parameters
+        'shift_hours': 8.0,                              # hours per shift
+        'break_time_minutes': 30,                        # minutes
+        'shifts_per_day': 1,                             # number of shifts
+        
+        # Efficiency (same as picking)
+        'work_efficiency': 85.0,                         # percentage (0-100)
+    },
+    
+    # Detailed picking parameters (for future Detailed mode)
     'picking': {
         'avg_walk_distance_per_pallet': 50.0,    # meters
         'scan_time': 3.0,                        # seconds
@@ -186,10 +226,13 @@ def get_variable_defaults():
             'storage_cost_percent': DEFAULT_INVENTORY_PARAMS['STORAGE_COST_PERCENT'],
         },
         'manpower_analysis': {
+            'complexity_mode': DEFAULT_MANPOWER_ANALYSIS_PARAMS['complexity_mode'],
             'target_efficiency': DEFAULT_MANPOWER_PARAMS['TARGET_EFFICIENCY'],
             'standard_pick_rate': DEFAULT_MANPOWER_PARAMS['STANDARD_PICK_RATE'],
             'shifts_per_day': DEFAULT_MANPOWER_PARAMS['SHIFTS_PER_DAY'],
             'break_time_minutes': DEFAULT_MANPOWER_PARAMS['BREAK_TIME_MINUTES'],
+            'picking_simplified': DEFAULT_MANPOWER_ANALYSIS_PARAMS['picking_simplified'].copy(),
+            'receiving_simplified': DEFAULT_MANPOWER_ANALYSIS_PARAMS['receiving_simplified'].copy(),
             'picking': DEFAULT_MANPOWER_ANALYSIS_PARAMS['picking'].copy(),
             'receiving_putaway': DEFAULT_MANPOWER_ANALYSIS_PARAMS['receiving_putaway'].copy(),
             'loading': DEFAULT_MANPOWER_ANALYSIS_PARAMS['loading'].copy()

@@ -332,7 +332,7 @@ def create_variables_form():
         })
     
     # Ensure all manpower analysis sub-sections exist
-    manpower_sections = ['picking', 'receiving_putaway', 'loading']
+    manpower_sections = ['picking_simplified', 'receiving_simplified', 'picking', 'receiving_putaway', 'loading']
     for section in manpower_sections:
         if section not in st.session_state.analysis_variables['manpower_analysis']:
             st.session_state.analysis_variables['manpower_analysis'][section] = config.DEFAULT_MANPOWER_ANALYSIS_PARAMS[section].copy()
@@ -397,8 +397,130 @@ def create_variables_form():
     # Manpower Analysis Variables Section (Expandable)
     with st.expander("⚡ Manpower Analysis Variables", expanded=False):
         
-        # Picking Manpower Analysis
-        st.markdown("### 🔄 Picking Manpower Analysis")
+        # Complexity Mode Selection
+        st.markdown("### ⚙️ Calculation Complexity")
+        complexity_mode = st.selectbox(
+            "Manpower Calculation Complexity",
+            options=['Simple', 'Detailed'],
+            index=0 if st.session_state.analysis_variables['manpower_analysis'].get('complexity_mode', 'Simple') == 'Simple' else 1,
+            help="Simple: Use average time per pallet. Detailed: Use detailed time studies (future)",
+            key="complexity_mode"
+        )
+        
+        if complexity_mode == 'Simple':
+            # Simple Picking Analysis Parameters
+            st.markdown("### 🔄 Simple Picking Analysis")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                percentile_planning = st.slider(
+                    "Percentile for Planning (%)",
+                    min_value=70, max_value=99,
+                    value=st.session_state.analysis_variables['manpower_analysis'].get('picking_simplified', {}).get('percentile_for_planning', 95),
+                    help="Use this percentile of daily volume for staffing calculations",
+                    key="percentile_planning"
+                )
+                
+                cases_per_pallet = st.number_input(
+                    "Average Cases per Pallet",
+                    min_value=10, max_value=500,
+                    value=st.session_state.analysis_variables['manpower_analysis'].get('picking_simplified', {}).get('average_cases_per_pallet', 100),
+                    step=5,
+                    key="cases_per_pallet"
+                )
+                
+                time_per_pallet = st.number_input(
+                    "Average Time per Pallet (minutes)",
+                    min_value=5.0, max_value=120.0,
+                    value=st.session_state.analysis_variables['manpower_analysis'].get('picking_simplified', {}).get('average_time_per_pallet', 30.0),
+                    step=1.0,
+                    key="time_per_pallet"
+                )
+            
+            with col2:
+                work_efficiency = st.slider(
+                    "Work Efficiency (%)",
+                    min_value=50, max_value=100,
+                    value=int(st.session_state.analysis_variables['manpower_analysis'].get('picking_simplified', {}).get('work_efficiency', 85)),
+                    help="Actual productivity as percentage of theoretical time",
+                    key="work_efficiency"
+                )
+                
+                shift_hours = st.number_input(
+                    "Shift Hours",
+                    min_value=4.0, max_value=12.0,
+                    value=st.session_state.analysis_variables['manpower_analysis'].get('picking_simplified', {}).get('shift_hours', 8.0),
+                    step=0.5,
+                    key="shift_hours"
+                )
+                
+                break_time = st.number_input(
+                    "Break Time (minutes)",
+                    min_value=0, max_value=120,
+                    value=st.session_state.analysis_variables['manpower_analysis'].get('picking_simplified', {}).get('break_time_minutes', 30),
+                    step=5,
+                    key="break_time"
+                )
+            
+            # Receiving Analysis Parameters (Simple Mode)
+            st.markdown("### 📦 Simple Receiving Analysis")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                receiving_percentile = st.slider(
+                    "Percentile for Receiving Planning (%)",
+                    min_value=70, max_value=99,
+                    value=st.session_state.analysis_variables['manpower_analysis'].get('receiving_simplified', {}).get('percentile_for_planning', 95),
+                    help="Use this percentile of daily receipt volume for staffing calculations",
+                    key="receiving_percentile_planning"
+                )
+                
+                receiving_cases_per_pallet = st.number_input(
+                    "Average Cases per Pallet (Receiving)",
+                    min_value=10, max_value=500,
+                    value=st.session_state.analysis_variables['manpower_analysis'].get('receiving_simplified', {}).get('average_cases_per_pallet', 100),
+                    step=5,
+                    help="Same pallets as picking, but can be different if needed",
+                    key="receiving_cases_per_pallet"
+                )
+                
+                unloading_putaway_time = st.number_input(
+                    "Unloading + Putaway Time per Pallet (minutes)",
+                    min_value=10.0, max_value=180.0,
+                    value=st.session_state.analysis_variables['manpower_analysis'].get('receiving_simplified', {}).get('unloading_putaway_time_per_pallet', 45.0),
+                    step=1.0,
+                    help="Includes unloading from truck + scanning + putaway to location",
+                    key="unloading_putaway_time"
+                )
+            
+            with col2:
+                receiving_efficiency = st.slider(
+                    "Receiving Work Efficiency (%)",
+                    min_value=50, max_value=100,
+                    value=int(st.session_state.analysis_variables['manpower_analysis'].get('receiving_simplified', {}).get('work_efficiency', 85)),
+                    help="Actual productivity as percentage of theoretical time",
+                    key="receiving_efficiency"
+                )
+                
+                receiving_shift_hours = st.number_input(
+                    "Receiving Shift Hours",
+                    min_value=4.0, max_value=12.0,
+                    value=st.session_state.analysis_variables['manpower_analysis'].get('receiving_simplified', {}).get('shift_hours', 8.0),
+                    step=0.5,
+                    key="receiving_shift_hours"
+                )
+                
+                receiving_break_time = st.number_input(
+                    "Receiving Break Time (minutes)",
+                    min_value=0, max_value=120,
+                    value=st.session_state.analysis_variables['manpower_analysis'].get('receiving_simplified', {}).get('break_time_minutes', 30),
+                    step=5,
+                    key="receiving_break_time"
+                )
+        
+        else:
+            # Detailed Analysis Parameters (existing)
+            st.markdown("### 🔄 Detailed Analysis Parameters (Future)")
         col1, col2 = st.columns(2)
         
         with col1:
@@ -520,10 +642,29 @@ def save_variables_configuration():
             'storage_cost_percent': 15.0,
         },
         'manpower_analysis': {
+            'complexity_mode': st.session_state.get('complexity_mode', 'Simple'),
             'target_efficiency': 85,
             'standard_pick_rate': 60,
             'shifts_per_day': 1,
             'break_time_minutes': 30,
+            'picking_simplified': {
+                'percentile_for_planning': st.session_state.get('percentile_planning', 95),
+                'average_cases_per_pallet': st.session_state.get('cases_per_pallet', 100),
+                'average_time_per_pallet': st.session_state.get('time_per_pallet', 30.0),
+                'work_efficiency': st.session_state.get('work_efficiency', 85.0),
+                'shift_hours': st.session_state.get('shift_hours', 8.0),
+                'break_time_minutes': st.session_state.get('break_time', 30),
+                'shifts_per_day': 1
+            },
+            'receiving_simplified': {
+                'percentile_for_planning': st.session_state.get('receiving_percentile_planning', 95),
+                'average_cases_per_pallet': st.session_state.get('receiving_cases_per_pallet', 100),
+                'unloading_putaway_time_per_pallet': st.session_state.get('unloading_putaway_time', 45.0),
+                'work_efficiency': st.session_state.get('receiving_efficiency', 85.0),
+                'shift_hours': st.session_state.get('receiving_shift_hours', 8.0),
+                'break_time_minutes': st.session_state.get('receiving_break_time', 30),
+                'shifts_per_day': 1
+            },
             'picking': {
                 'avg_walk_distance_per_pallet': st.session_state.get('picking_walk_distance', 50.0),
                 'scan_time': st.session_state.get('picking_scan_time', 3.0),
@@ -751,7 +892,9 @@ def execute_warehouse_analysis():
                 'total_orders': available_data.get('order_data', pd.DataFrame()).shape[0] if 'order_data' in available_data else 0,
                 'unique_skus': available_data.get('order_data', pd.DataFrame())['Sku Code'].nunique() if 'order_data' in available_data else 0,
                 'total_volume': available_data.get('order_data', pd.DataFrame())['Qty in Cases'].sum() if 'order_data' in available_data else 0
-            }
+            },
+            # IMPORTANT: Include all the actual analysis results for Word report
+            **analysis_results  # This spreads all analysis results into the session state
         }
         st.session_state.excel_report_ready = True
         
@@ -798,7 +941,7 @@ def show_download_section():
         st.metric("Unique SKUs", results['summary']['unique_skus'])
         st.markdown('</div>', unsafe_allow_html=True)
     
-    # Download section
+    # Download section - Excel Report
     st.markdown("### 📥 Download Excel Report")
     
     col1, col2 = st.columns([2, 1])
@@ -837,6 +980,85 @@ def show_download_section():
         Generated: {results['timestamp'].strftime("%H:%M:%S")}
         </div>
         """, unsafe_allow_html=True)
+    
+    # Word Report Section - Only show after Excel is ready
+    if st.session_state.excel_report_ready:
+        st.markdown("---")  # Separator
+        st.markdown("### 📄 Generate MS Word Report")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            st.markdown("""
+            **MS Word Report includes:**
+            - Executive Summary with AI-powered insights
+            - Receipt Analysis with intelligent commentary
+            - Data tables and charts from analysis
+            - AI-generated operational recommendations
+            - Professional document formatting
+            """)
+            
+            # Check for API key
+            if not os.getenv('GEMINI_API_KEY'):
+                st.warning("""
+                ⚠️ **Gemini API Key Required**
+                
+                To generate AI-powered insights, please set your Gemini API key:
+                1. Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+                2. Set environment variable: `export GEMINI_API_KEY='your-key-here'`
+                3. Restart the application
+                
+                Note: Report will use fallback text without API key.
+                """)
+        
+        with col2:
+            # Always show the button, but handle API key absence gracefully
+            if st.button("📝 Generate Word Report", type="secondary", use_container_width=True):
+                with st.spinner("Generating Word report with insights..."):
+                    try:
+                        # Import Word generator
+                        from scripts.word_report import WordReportGenerator
+                        
+                        # Create generator instance
+                        word_gen = WordReportGenerator(
+                            st.session_state.analysis_results,
+                            st.session_state.analysis_variables
+                        )
+                        
+                        # Generate report
+                        word_buffer = word_gen.generate_report()
+                        
+                        # Provide download button
+                        word_filename = f"Warehouse_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+                        
+                        st.download_button(
+                            label="📥 Download Word Report",
+                            data=word_buffer,
+                            file_name=word_filename,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True
+                        )
+                        
+                        st.success("✅ Word report generated successfully!")
+                        
+                        if not os.getenv('GEMINI_API_KEY'):
+                            st.info("ℹ️ Report generated with fallback text. Add Gemini API key for AI insights.")
+                        
+                    except ImportError as e:
+                        st.error("""
+                        ❌ Missing dependencies for Word report generation.
+                        
+                        Please install required packages:
+                        ```bash
+                        pip install python-docx google-generativeai python-dotenv matplotlib
+                        ```
+                        """)
+                    except Exception as e:
+                        st.error(f"❌ Error generating Word report: {str(e)}")
+                        if "GEMINI_API_KEY" in str(e):
+                            st.info("💡 Set GEMINI_API_KEY environment variable for AI insights.")
+                        else:
+                            st.error("Please check the error and try again.")
 
 def generate_template_excel():
     """Provide the actual test data file as template"""

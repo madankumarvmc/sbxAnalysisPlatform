@@ -905,6 +905,17 @@ class ExcelGenerator:
                                            current_row, 0)
             current_row += len(segment_df) + 3
         
+        # ✅ NEW: Add ABC-FMS Distribution Chart
+        try:
+            # Calculate chart data from percentage matrices
+            chart_data = self._prepare_abc_fms_chart_data(cross_tab)
+            if chart_data is not None:
+                # Add chart to the right of the matrices
+                self._add_abc_fms_chart(writer, chart_data, matrix_start_col + 15, 0)
+        except Exception as e:
+            if self.verbose:
+                print(f"⚠️ Could not add ABC-FMS chart: {str(e)}")
+        
         # Strategic recommendations
         strategic_recs = abc_results.get('strategic_recommendations', {})
         if 'recommendations' in strategic_recs:
@@ -947,6 +958,80 @@ class ExcelGenerator:
         # Write dataframe starting from next row
         df.to_excel(writer, sheet_name=sheet_name, startrow=start_row + 2, 
                    startcol=start_col, index=False)
+    
+    def _prepare_abc_fms_chart_data(self, cross_tab):
+        """Prepare data for ABC-FMS distribution chart"""
+        try:
+            # Extract percentage matrices
+            sku_pct = cross_tab.get('sku_percent_matrix')
+            volume_pct = cross_tab.get('volume_percent_matrix') 
+            lines_pct = cross_tab.get('lines_percent_matrix')
+            
+            if sku_pct is None or volume_pct is None or lines_pct is None:
+                return None
+            
+            # Calculate AF, CS, and Rest percentages for each metric
+            # AF = A class + F class
+            af_sku = sku_pct.loc['A', 'F'] if 'A' in sku_pct.index and 'F' in sku_pct.columns else 0
+            af_volume = volume_pct.loc['A', 'F'] if 'A' in volume_pct.index and 'F' in volume_pct.columns else 0
+            af_lines = lines_pct.loc['A', 'F'] if 'A' in lines_pct.index and 'F' in lines_pct.columns else 0
+            
+            # CS = C class + S class
+            cs_sku = sku_pct.loc['C', 'S'] if 'C' in sku_pct.index and 'S' in sku_pct.columns else 0
+            cs_volume = volume_pct.loc['C', 'S'] if 'C' in volume_pct.index and 'S' in volume_pct.columns else 0
+            cs_lines = lines_pct.loc['C', 'S'] if 'C' in lines_pct.index and 'S' in lines_pct.columns else 0
+            
+            # Rest = 100 - AF - CS
+            rest_sku = 100 - af_sku - cs_sku
+            rest_volume = 100 - af_volume - cs_volume  
+            rest_lines = 100 - af_lines - cs_lines
+            
+            # Create chart data DataFrame
+            chart_data = pd.DataFrame({
+                'AF': [af_sku, af_volume, af_lines],
+                'Rest': [rest_sku, rest_volume, rest_lines],
+                'CS': [cs_sku, cs_volume, cs_lines]
+            }, index=['SKU', 'Volume', 'Lines'])
+            
+            return chart_data
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"⚠️ Error preparing ABC-FMS chart data: {str(e)}")
+            return None
+    
+    def _add_abc_fms_chart(self, writer, chart_data, chart_col, chart_row):
+        """Add ABC-FMS distribution chart to the worksheet"""
+        try:
+            # Write chart data to worksheet (hidden area)
+            data_start_row = chart_row + 25  # Place data below visible area
+            chart_data.to_excel(writer, sheet_name='ABC_FMS_Analysis', 
+                               startrow=data_start_row, startcol=chart_col, 
+                               index=True)
+            
+            # Try to add chart using existing chart infrastructure
+            try:
+                from charts.excel_chart_generator import ExcelChartGenerator
+                chart_gen = ExcelChartGenerator(writer.sheets['ABC_FMS_Analysis'])
+                
+                # Calculate table position for chart placement
+                table_position = {
+                    'row': data_start_row + 1,
+                    'col': chart_col + 1,
+                    'num_rows': len(chart_data),
+                    'num_cols': len(chart_data.columns)
+                }
+                
+                # Add chart
+                chart_gen.add_abc_fms_distribution_chart(table_position, columns_gap=2)
+                
+            except ImportError:
+                if self.verbose:
+                    print("⚠️ Chart generator not available, chart data written to sheet")
+                    
+        except Exception as e:
+            if self.verbose:
+                print(f"⚠️ Error adding ABC-FMS chart: {str(e)}")
     
     def _create_inventory_analysis_sheet(self, writer):
         """Create inventory analysis sheet with SKU matrix and daily summary"""
@@ -1020,40 +1105,117 @@ class ExcelGenerator:
         # Section 1: Picking Analysis
         picking_analysis = manpower_results.get('picking_analysis', {})
         if picking_analysis:
-            # Add section header
+            # Add main section header
             header_df = pd.DataFrame([['PICKING MANPOWER ANALYSIS']], columns=['Section'])
             header_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
             current_row += 2
             
-            # Create picking analysis data
-            picking_data = []
-            for key, value in picking_analysis.items():
-                if key != 'notes':
-                    picking_data.append([key.replace('_', ' ').title(), str(value)])
+            # Subsection 1A: Daily Summary
+            daily_summary = picking_analysis.get('daily_summary', {})
+            if daily_summary:
+                # Daily summary header
+                summary_header = pd.DataFrame([['Daily Staffing Summary']], columns=['Section'])
+                summary_header.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
+                current_row += 1
+                
+                # Daily summary data
+                daily_data = []
+                for key, value in daily_summary.items():
+                    formatted_key = key.replace('_', ' ').title()
+                    daily_data.append([formatted_key, str(value)])
+                
+                daily_df = pd.DataFrame(daily_data, columns=['Metric', 'Value'])
+                daily_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
+                current_row += len(daily_df) + 2
             
-            if picking_data:
-                picking_df = pd.DataFrame(picking_data, columns=['Metric', 'Value'])
-                picking_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
-                current_row += len(picking_df) + 3
+            # Subsection 1B: Shift Breakdown
+            shift_breakdown = picking_analysis.get('shift_breakdown', [])
+            if shift_breakdown:
+                # Shift breakdown header
+                shift_header = pd.DataFrame([['Shift-wise Breakdown']], columns=['Section'])
+                shift_header.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
+                current_row += 1
+                
+                # Convert shift breakdown to DataFrame
+                shift_df = pd.DataFrame(shift_breakdown)
+                if not shift_df.empty:
+                    shift_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
+                    current_row += len(shift_df) + 2
+            
+            # Subsection 1C: Hourly Requirements
+            hourly_requirements = picking_analysis.get('hourly_requirements', [])
+            if hourly_requirements:
+                # Hourly requirements header
+                hourly_header = pd.DataFrame([['Hourly Requirements']], columns=['Section'])
+                hourly_header.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
+                current_row += 1
+                
+                # Convert hourly requirements to DataFrame
+                hourly_df = pd.DataFrame(hourly_requirements)
+                if not hourly_df.empty:
+                    hourly_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
+                    current_row += len(hourly_df) + 3
         
         # Section 2: Receiving Analysis
         receiving_analysis = manpower_results.get('receiving_analysis', {})
         if receiving_analysis:
-            # Add section header
+            # Add main section header
             header_df = pd.DataFrame([['RECEIVING & PUTAWAY MANPOWER ANALYSIS']], columns=['Section'])
             header_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
             current_row += 2
             
-            # Create receiving analysis data
-            receiving_data = []
-            for key, value in receiving_analysis.items():
-                if key != 'notes':
-                    receiving_data.append([key.replace('_', ' ').title(), str(value)])
-            
-            if receiving_data:
-                receiving_df = pd.DataFrame(receiving_data, columns=['Metric', 'Value'])
-                receiving_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
-                current_row += len(receiving_df) + 3
+            # Check if this is simplified analysis with three subsections
+            daily_summary = receiving_analysis.get('daily_summary', {})
+            if daily_summary:
+                # Subsection 2A: Daily Summary
+                summary_header = pd.DataFrame([['Daily Staffing Summary']], columns=['Section'])
+                summary_header.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
+                current_row += 1
+                
+                # Daily summary data
+                daily_data = []
+                for key, value in daily_summary.items():
+                    formatted_key = key.replace('_', ' ').title()
+                    daily_data.append([formatted_key, str(value)])
+                
+                daily_df = pd.DataFrame(daily_data, columns=['Metric', 'Value'])
+                daily_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
+                current_row += len(daily_df) + 2
+                
+                # Subsection 2B: Shift Breakdown
+                shift_breakdown = receiving_analysis.get('shift_breakdown', [])
+                if shift_breakdown:
+                    shift_header = pd.DataFrame([['Shift-wise Breakdown']], columns=['Section'])
+                    shift_header.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
+                    current_row += 1
+                    
+                    shift_df = pd.DataFrame(shift_breakdown)
+                    if not shift_df.empty:
+                        shift_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
+                        current_row += len(shift_df) + 2
+                
+                # Subsection 2C: Hourly Requirements
+                hourly_requirements = receiving_analysis.get('hourly_requirements', [])
+                if hourly_requirements:
+                    hourly_header = pd.DataFrame([['Hourly Requirements']], columns=['Section'])
+                    hourly_header.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False, header=False)
+                    current_row += 1
+                    
+                    hourly_df = pd.DataFrame(hourly_requirements)
+                    if not hourly_df.empty:
+                        hourly_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
+                        current_row += len(hourly_df) + 3
+            else:
+                # Legacy format - simple key-value pairs
+                receiving_data = []
+                for key, value in receiving_analysis.items():
+                    if key != 'notes':
+                        receiving_data.append([key.replace('_', ' ').title(), str(value)])
+                
+                if receiving_data:
+                    receiving_df = pd.DataFrame(receiving_data, columns=['Metric', 'Value'])
+                    receiving_df.to_excel(writer, sheet_name='Manpower_Analysis', startrow=current_row, index=False)
+                    current_row += len(receiving_df) + 3
         
         # Section 3: Loading Analysis
         loading_analysis = manpower_results.get('loading_analysis', {})

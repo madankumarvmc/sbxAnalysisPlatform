@@ -14,8 +14,8 @@ import pandas as pd
 # Import all chart modules
 from .order_analysis_charts import OrderAnalysisCharts
 from .receipt_analysis_charts import ReceiptAnalysisCharts
+from .abc_fms_analysis_charts import ABCFMSAnalysisCharts
 # from .sku_analysis_charts import SKUAnalysisCharts
-# from .abc_fms_analysis_charts import ABCFMSAnalysisCharts
 # from .inventory_analysis_charts import InventoryAnalysisCharts
 # from .manpower_analysis_charts import ManpowerAnalysisCharts
 
@@ -38,6 +38,7 @@ class ExcelChartGenerator:
         # Initialize all chart modules
         self.order_charts = OrderAnalysisCharts()
         self.receipt_charts = ReceiptAnalysisCharts()
+        self.abc_fms_charts = ABCFMSAnalysisCharts()
         
     def add_order_daily_trend_chart(self, table_position: Dict, columns_gap: int = 2) -> bool:
         """
@@ -324,6 +325,62 @@ class ExcelChartGenerator:
             
         except Exception as e:
             print(f"⚠️ Could not add receipt volume chart: {str(e)}")
+            return False
+    
+    def add_abc_fms_distribution_chart(self, table_position: Dict, columns_gap: int = 2) -> bool:
+        """
+        Add ABC-FMS distribution stacked bar chart to the right of the table.
+        
+        Args:
+            table_position: Dictionary with table location info:
+                - 'row': Starting row of table (1-based Excel indexing)  
+                - 'col': Starting column of table (1-based)
+                - 'num_rows': Number of data rows (excluding header)
+                - 'num_cols': Number of columns in table
+            columns_gap: Number of columns to leave between table and chart (default 2)
+            
+        Returns:
+            bool: True if chart was added successfully, False otherwise
+        """
+        try:
+            # Extract position info
+            start_row = table_position['row']
+            start_col = table_position['col']
+            num_rows = table_position['num_rows']
+            
+            # Calculate chart data references
+            # Categories (row headers: SKU, Volume, Lines)
+            categories_ref = Reference(self.ws,
+                                     min_col=start_col,
+                                     min_row=start_row + 1,
+                                     max_row=start_row + num_rows)
+            
+            # Data values (columns: AF, Rest, CS)
+            data_ref = Reference(self.ws,
+                               min_col=start_col + 1,
+                               min_row=start_row,
+                               max_col=start_col + table_position['num_cols'],
+                               max_row=start_row + num_rows)
+            
+            # Get chart from chart module
+            chart = self.abc_fms_charts.create_abc_fms_distribution_chart(
+                ws=self.ws,
+                data_ref=data_ref,
+                categories_ref=categories_ref
+            )
+            
+            # Calculate chart position (to the right of table)
+            chart_col = start_col + table_position['num_cols'] + columns_gap
+            chart_position = f"{get_column_letter(chart_col)}{start_row}"
+            
+            # Add chart to worksheet
+            self.ws.add_chart(chart, chart_position)
+            
+            print(f"✅ ABC-FMS distribution chart added at {chart_position}")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ Could not add ABC-FMS distribution chart: {str(e)}")
             return False
     
     # Helper methods
