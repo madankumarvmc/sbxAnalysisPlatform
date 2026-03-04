@@ -339,6 +339,9 @@ class OrderAnalyzer:
         }
         sku_stats = sku_stats.rename(columns=column_mapping)
         
+        # Analysis period length
+        total_days = self.order_data['Date'].nunique()
+
         # Standard Pareto approach: each SKU's share of total order lines.
         # These percentages sum to exactly 100%, so cumsum reaches 100 directly.
         total_order_lines = len(self.order_data)
