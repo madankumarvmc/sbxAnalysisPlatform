@@ -83,12 +83,24 @@ DEFAULT_FMS_THRESHOLDS = {
 # Default percentile levels for capacity planning
 DEFAULT_PERCENTILE_LEVELS = [95, 90, 85, 80, 75]
 
+# Default pallet fit fallback
+# Used ONLY when the SKU master is missing Pallet Fit values for one or more SKUs.
+# This is NOT a hardcoded warehouse standard — it is a configurable fallback.
+# Set this to a value representative of your warehouse before running analysis,
+# or (better) ensure all SKUs in your SKU master have a Pallet Fit value populated.
+DEFAULT_PALLET_FIT = 50  # cases per pallet (adjust to your warehouse standard)
+
 # Default inventory parameters
 DEFAULT_INVENTORY_PARAMS = {
     'SAFETY_STOCK_DAYS': 7,
     'REORDER_POINT_DAYS': 14,
     'DEFAULT_LEAD_TIME': 7,
     'STORAGE_COST_PERCENT': 15.0
+}
+
+# Default receipt analysis parameters
+DEFAULT_RECEIPT_PARAMS = {
+    'DOCK_CAPACITY_TRUCKS': 20,   # max trucks per day (used for dock utilization %)
 }
 
 # Default manpower parameters
@@ -208,6 +220,7 @@ def get_variable_defaults():
             'decimal_places': 2,
             'working_days_per_week': DEFAULT_MANPOWER_PARAMS['WORKING_DAYS_PER_WEEK'],
             'working_hours_per_day': DEFAULT_MANPOWER_PARAMS['WORKING_HOURS_PER_DAY'],
+            'default_pallet_fit': DEFAULT_PALLET_FIT,
         },
         'order_analysis': {
             'fms_fast_threshold': DEFAULT_FMS_THRESHOLDS['F_THRESHOLD'],
@@ -296,6 +309,7 @@ def create_analysis_config(streamlit_variables):
             'A_THRESHOLD': streamlit_variables.get('global', {}).get('abc_a_threshold', 70.0),
             'B_THRESHOLD': streamlit_variables.get('global', {}).get('abc_b_threshold', 90.0)
         },
+        'DEFAULT_PALLET_FIT': streamlit_variables.get('global', {}).get('default_pallet_fit', DEFAULT_PALLET_FIT),
         'FMS_THRESHOLDS': {
             'F_THRESHOLD': streamlit_variables.get('order_analysis', {}).get('fms_fast_threshold', 70.0),
             'M_THRESHOLD': streamlit_variables.get('order_analysis', {}).get('fms_medium_threshold', 90.0)
@@ -307,6 +321,9 @@ def create_analysis_config(streamlit_variables):
             'END_DATE': None
         },
         'INVENTORY_PARAMS': streamlit_variables.get('inventory_analysis', DEFAULT_INVENTORY_PARAMS),
+        'RECEIPT_PARAMS': streamlit_variables.get('receipt_analysis', {}).get(
+            'receipt_params', DEFAULT_RECEIPT_PARAMS.copy()
+        ),
         'MANPOWER_PARAMS': streamlit_variables.get('manpower_analysis', DEFAULT_MANPOWER_PARAMS.copy()),
         'OUTPUT_SETTINGS': {
             'CURRENCY_SYMBOL': streamlit_variables.get('global', {}).get('currency_symbol', '$'),

@@ -149,6 +149,24 @@ class ManpowerAnalyzer:
             daily_cases = self._calculate_daily_volumes()
             percentile = picking_config.get('percentile_for_planning', 95)
             peak_daily_cases = daily_cases.quantile(percentile / 100)
+
+            # Order line analysis — each line = one pick trip (primary warehousing KPI)
+            daily_order_lines = self.order_data.groupby('Date').size()
+            peak_daily_lines = daily_order_lines.quantile(percentile / 100)
+            avg_daily_lines = daily_order_lines.mean()
+
+            # Pick type breakdown (inline classification from Qty in Cases / Qty in Eaches)
+            _has_cases = (self.order_data['Qty in Cases'] > 0) if 'Qty in Cases' in self.order_data.columns else pd.Series(False, index=self.order_data.index)
+            _has_eaches = (self.order_data['Qty in Eaches'] > 0) if 'Qty in Eaches' in self.order_data.columns else pd.Series(False, index=self.order_data.index)
+            _pick_type = pd.Series('No_Volume', index=self.order_data.index)
+            _pick_type[_has_cases & ~_has_eaches] = 'Case_Pick'
+            _pick_type[~_has_cases & _has_eaches] = 'Each_Pick'
+            _pick_type[_has_cases & _has_eaches] = 'Mixed_Pick'
+            # Aggregate by pick type
+            _line_counts = _pick_type.value_counts().rename('Order_Lines')
+            _case_sums = self.order_data.groupby(_pick_type)['Qty in Cases'].sum().rename('Total_Cases') if 'Qty in Cases' in self.order_data.columns else pd.Series(dtype=float)
+            _each_sums = self.order_data.groupby(_pick_type)['Qty in Eaches'].sum().rename('Total_Eaches') if 'Qty in Eaches' in self.order_data.columns else pd.Series(dtype=float)
+            pick_type_summary = pd.concat([_line_counts, _case_sums, _each_sums], axis=1).fillna(0).to_dict('index')
             
             # Step 2: Convert to pallets
             cases_per_pallet = picking_config.get('average_cases_per_pallet', 100)
@@ -159,9 +177,9 @@ class ManpowerAnalyzer:
             theoretical_time_hours = (total_pallets * time_per_pallet_min) / 60
             
             # Step 4: Adjust for efficiency
-            work_efficiency = picking_config.get('work_efficiency', 85.0) / 100
+            work_efficiency = max(picking_config.get('work_efficiency', 85.0) / 100, 0.01)
             actual_time_hours = theoretical_time_hours / work_efficiency
-            
+
             # Step 5: Calculate staff requirements
             shift_hours = picking_config.get('shift_hours', 8.0)
             break_time_hours = picking_config.get('break_time_minutes', 30) / 60
@@ -177,14 +195,20 @@ class ManpowerAnalyzer:
             analysis['daily_summary'] = {
                 'planning_percentile': f"{percentile}th percentile",
                 'peak_daily_cases': round(peak_daily_cases, 0),
+                'peak_daily_order_lines': round(peak_daily_lines, 0),
+                'avg_daily_order_lines': round(avg_daily_lines, 1),
                 'total_pallets': round(total_pallets, 1),
                 'theoretical_time_hours': round(theoretical_time_hours, 2),
                 'actual_time_hours': round(actual_time_hours, 2),
                 'work_efficiency_percent': picking_config.get('work_efficiency', 85.0),
                 'total_pickers_required': pickers_required,
                 'pickers_per_shift': pickers_per_shift,
-                'capacity_utilization': round((actual_time_hours / (pickers_required * net_hours_per_person)) * 100, 1)
+                'capacity_utilization': round((actual_time_hours / (pickers_required * net_hours_per_person)) * 100, 1),
+                'productivity_benchmark_lines_per_person_day': round(
+                    peak_daily_lines / pickers_required, 1
+                ) if pickers_required > 0 else 0,
             }
+            analysis['pick_type_breakdown'] = pick_type_summary
             
             # Shift Breakdown
             for shift in range(shifts_per_day):
@@ -313,9 +337,9 @@ class ManpowerAnalyzer:
             theoretical_time_hours = (total_pallets * time_per_pallet_min) / 60
             
             # Step 4: Adjust for efficiency
-            work_efficiency = receiving_config.get('work_efficiency', 85.0) / 100
+            work_efficiency = max(receiving_config.get('work_efficiency', 85.0) / 100, 0.01)
             actual_time_hours = theoretical_time_hours / work_efficiency
-            
+
             # Step 5: Calculate staff requirements
             shift_hours = receiving_config.get('shift_hours', 8.0)
             break_time_hours = receiving_config.get('break_time_minutes', 30) / 60
@@ -368,13 +392,26 @@ class ManpowerAnalyzer:
                     'time_required_minutes': round(pallets_per_hour * time_per_pallet_min, 1),
                     'staff_required': receivers_per_shift
                 })
-                
+
+            # Truck-level analysis (dock door scheduling metric)
+            if 'Truck No' in self.receipt_data.columns:
+                daily_trucks = self.receipt_data.groupby('Receipt Date')['Truck No'].nunique()
+                shipment_cases = self.receipt_data.groupby('Truck No')['Quantity in Cases'].sum()
+                analysis['truck_analysis'] = {
+                    'avg_trucks_per_day': round(daily_trucks.mean(), 1),
+                    'peak_trucks_per_day': int(daily_trucks.quantile(percentile / 100)),
+                    'max_trucks_single_day': int(daily_trucks.max()),
+                    'avg_cases_per_truck': round(shipment_cases.mean(), 0),
+                    'min_cases_per_truck': round(shipment_cases.min(), 0),
+                    'max_cases_per_truck': round(shipment_cases.max(), 0),
+                }
+
         except Exception as e:
             analysis['error'] = f"Calculation error: {str(e)}"
             print(f"⚠️ Error in receiving analysis: {str(e)}")
-        
+
         return analysis
-    
+
     def _analyze_receiving_detailed(self) -> Dict[str, Any]:
         """
         Detailed receiving analysis (placeholder for future implementation).
@@ -423,15 +460,42 @@ class ManpowerAnalyzer:
             'notes': 'Placeholder analysis - actual implementation pending'
         }
         
-        # Calculate placeholder values if order data exists (assuming orders need to be loaded)
-        if self.order_data is not None and len(self.order_data) > 0:
-            total_cases = self.order_data['Qty in Cases'].sum() if 'Qty in Cases' in self.order_data.columns else 1000
-            
+        # Calculate values from order data using percentile peak day (consistent with picking/receiving)
+        if self.order_data is not None and len(self.order_data) > 0 and 'Qty in Cases' in self.order_data.columns:
+            daily_cases = (self.order_data.groupby('Date')['Qty in Cases'].sum()
+                           if 'Date' in self.order_data.columns
+                           else pd.Series([self.order_data['Qty in Cases'].sum()]))
+            percentile_level = self.manpower_params.get('picking_simplified', {}).get('percentile_for_planning', 95)
+            peak_daily_cases = float(np.percentile(daily_cases, percentile_level))
+            avg_daily_cases  = float(daily_cases.mean())
+
+            loading_time_per_case_sec = self.loading_params.get('loading_time_per_case', 4.0)
+            # Staff sizing uses peak-day cases; reporting includes avg for context
+            peak_daily_loading_hours = (peak_daily_cases * loading_time_per_case_sec) / 3600
+
+            # Use picking shift config as proxy for loading (loading config has no shift params)
+            shift_hours = self.manpower_params.get('picking_simplified', {}).get('shift_hours', 8.0)
+            efficiency  = max(
+                self.manpower_params.get('picking_simplified', {}).get('work_efficiency', 85.0) / 100, 0.01
+            )
+            net_hours = shift_hours * efficiency
+
             loading_analysis.update({
-                'total_cases_to_load': total_cases,
-                'estimated_daily_loading_hours': round(total_cases * 0.01, 2),  # 36 sec per case
-                'recommended_loaders': max(1, int(total_cases * 0.01 / 8))  # 8 hour shifts
+                'planning_percentile':           f'{percentile_level}th percentile',
+                'total_cases_to_load':           int(self.order_data['Qty in Cases'].sum()),
+                'average_daily_cases':           round(avg_daily_cases, 0),
+                'peak_daily_cases':              round(peak_daily_cases, 0),
+                'estimated_daily_loading_hours': round(peak_daily_loading_hours, 2),
+                'recommended_loaders':           max(1, math.ceil(peak_daily_loading_hours / net_hours))
             })
+
+        # Per-truck loading time (dock scheduling metric) — uses receipt data as proxy for truck size
+        if self.receipt_data is not None and 'Truck No' in self.receipt_data.columns and 'Quantity in Cases' in self.receipt_data.columns:
+            avg_cases_per_truck = self.receipt_data.groupby('Truck No')['Quantity in Cases'].sum().mean()
+            loading_time_per_case_sec = self.loading_params.get('loading_time_per_case', 4.0)
+            loading_analysis['avg_loading_time_per_truck_minutes'] = round(
+                (avg_cases_per_truck * loading_time_per_case_sec) / 60, 1
+            )
         
         self.loading_analysis = loading_analysis
         return loading_analysis
@@ -445,43 +509,64 @@ class ManpowerAnalyzer:
         """
         print("📊 Creating efficiency summary...")
         
-        # Placeholder implementation
-        efficiency_summary = {
-            'overall_efficiency': 85.0,  # Placeholder
-            'total_recommended_staff': 0,
-            'peak_hours_staff_multiplier': 1.5,
-            'optimization_opportunities': [
-                'Implement pick path optimization',
-                'Consider voice picking technology',
-                'Review putaway strategies',
-                'Analyze peak hour staffing patterns'
-            ],
-            'cost_analysis': {
-                'estimated_daily_labor_hours': 0,
-                'estimated_monthly_labor_cost': 0,  # Placeholder
-                'potential_savings': 'To be calculated in full implementation'
-            },
-            'notes': 'Placeholder summary - actual implementation pending'
-        }
-        
         # Calculate totals from sub-analyses
         total_staff = 0
         total_hours = 0
-        
-        if self.picking_analysis:
-            total_staff += self.picking_analysis.get('recommended_pickers', 0)
-            total_hours += self.picking_analysis.get('estimated_daily_picking_hours', 0)
-        
-        if self.receiving_analysis:
-            total_staff += self.receiving_analysis.get('recommended_receivers', 0)
-            total_hours += self.receiving_analysis.get('estimated_daily_receiving_hours', 0)
-        
+
+        if self.picking_analysis and 'daily_summary' in self.picking_analysis:
+            total_staff += self.picking_analysis['daily_summary'].get('total_pickers_required', 0)
+            total_hours += self.picking_analysis['daily_summary'].get('actual_time_hours', 0)
+
+        if self.receiving_analysis and 'daily_summary' in self.receiving_analysis:
+            total_staff += self.receiving_analysis['daily_summary'].get('total_receivers_required', 0)
+            total_hours += self.receiving_analysis['daily_summary'].get('actual_time_hours', 0)
+
         if self.loading_analysis:
             total_staff += self.loading_analysis.get('recommended_loaders', 0)
             total_hours += self.loading_analysis.get('estimated_daily_loading_hours', 0)
+
+        # Build opportunities list from actual utilization values
+        opportunities = []
+        if self.picking_analysis and 'daily_summary' in self.picking_analysis:
+            pick_util = self.picking_analysis['daily_summary'].get('capacity_utilization', 0)
+            if pick_util > 90:
+                opportunities.append(f'Picking capacity critically high ({pick_util:.0f}%): add a shift or increase headcount')
+            elif pick_util < 40:
+                opportunities.append(f'Picking capacity underutilised ({pick_util:.0f}%): consider consolidating shifts')
+        if self.receiving_analysis and 'daily_summary' in self.receiving_analysis:
+            recv_util = self.receiving_analysis['daily_summary'].get('capacity_utilization', 0)
+            if recv_util > 90:
+                opportunities.append(f'Receiving capacity critically high ({recv_util:.0f}%): consider staggered truck bookings')
+            elif recv_util < 40:
+                opportunities.append(f'Receiving capacity underutilised ({recv_util:.0f}%): review scheduling')
+        opportunities += [
+            'Implement pick-path optimisation to reduce travel time',
+            'Review putaway strategies to minimise congestion at peak inbound times',
+        ]
+
+        efficiency_summary = {
+            'overall_efficiency':        85.0,
+            'total_recommended_staff':   0,
+            'peak_hours_staff_multiplier': 1.5,
+            'optimization_opportunities': opportunities,
+            'cost_analysis': {
+                'estimated_daily_labor_hours':  0,
+                'estimated_monthly_labor_cost': 0,
+                'potential_savings': 'To be calculated in full implementation'
+            },
+        }
         
+        recommended_pickers   = (self.picking_analysis['daily_summary'].get('total_pickers_required', 0)
+                                  if self.picking_analysis and 'daily_summary' in self.picking_analysis else 0)
+        recommended_receivers = (self.receiving_analysis['daily_summary'].get('total_receivers_required', 0)
+                                  if self.receiving_analysis and 'daily_summary' in self.receiving_analysis else 0)
+        recommended_loaders   = self.loading_analysis.get('recommended_loaders', 0) if self.loading_analysis else 0
+
         efficiency_summary.update({
-            'total_recommended_staff': total_staff,
+            'total_recommended_staff':     recommended_pickers + recommended_receivers + recommended_loaders,
+            'recommended_pickers':         recommended_pickers,
+            'recommended_receivers':       recommended_receivers,
+            'recommended_loaders':         recommended_loaders,
             'estimated_daily_labor_hours': round(total_hours, 2)
         })
         

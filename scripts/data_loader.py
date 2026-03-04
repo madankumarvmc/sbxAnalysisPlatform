@@ -143,7 +143,8 @@ class DataLoader:
                 self.uploaded_file,
                 sheet_name=self.sheet_names['ORDER_DATA']
             )
-            
+            self.order_data.columns = self.order_data.columns.str.strip()
+
             if self.verbose:
                 print(f"Raw order data shape: {self.order_data.shape}")
             
@@ -192,7 +193,8 @@ class DataLoader:
                 self.uploaded_file,
                 sheet_name=self.sheet_names['SKU_MASTER']
             )
-            
+            self.sku_master.columns = self.sku_master.columns.str.strip()
+
             if self.verbose:
                 print(f"Raw SKU master shape: {self.sku_master.shape}")
             
@@ -243,7 +245,8 @@ class DataLoader:
                 self.uploaded_file,
                 sheet_name=self.sheet_names['RECEIPT_DATA']
             )
-            
+            self.receipt_data.columns = self.receipt_data.columns.str.strip()
+
             if self.verbose:
                 print(f"Raw receipt data shape: {self.receipt_data.shape}")
             
@@ -290,7 +293,8 @@ class DataLoader:
                 self.uploaded_file,
                 sheet_name=self.sheet_names['INVENTORY_DATA']
             )
-            
+            self.inventory_data.columns = self.inventory_data.columns.str.strip()
+
             if self.verbose:
                 print(f"Raw inventory data shape: {self.inventory_data.shape}")
             
@@ -399,14 +403,38 @@ class DataLoader:
                     # Handle different datetime formats
                     if column == 'Calendar Day':
                         # Handle DD.MM.YYYY format for inventory data - strip whitespace first
+                        _original_nulls = df[column].isna().sum()
                         df[column] = df[column].astype(str).str.strip()
-                        df[column] = pd.to_datetime(df[column], format='%d.%m.%Y', errors='coerce')
+                        _parsed = pd.to_datetime(df[column], format='%d.%m.%Y', errors='coerce')
+                        _new_nats = int(_parsed.isna().sum()) - int(_original_nulls)
+                        if _new_nats > 0:
+                            warnings.warn(
+                                f"data_loader: {_new_nats} '{column}' value(s) could not be parsed as DD.MM.YYYY "
+                                f"and will be dropped. Check for mixed date formats."
+                            )
+                        df[column] = _parsed
                     elif column == 'Receipt Date':
                         # Handle DD.MM.YYYY format for receipt data - strip whitespace first
+                        _original_nulls = df[column].isna().sum()
                         df[column] = df[column].astype(str).str.strip()
-                        df[column] = pd.to_datetime(df[column], format='%d.%m.%Y', errors='coerce')
+                        _parsed = pd.to_datetime(df[column], format='%d.%m.%Y', errors='coerce')
+                        _new_nats = int(_parsed.isna().sum()) - int(_original_nulls)
+                        if _new_nats > 0:
+                            warnings.warn(
+                                f"data_loader: {_new_nats} '{column}' value(s) could not be parsed as DD.MM.YYYY "
+                                f"and will be dropped. Check for mixed date formats."
+                            )
+                        df[column] = _parsed
                     else:
-                        df[column] = pd.to_datetime(df[column], errors='coerce')
+                        _original_nulls = df[column].isna().sum()
+                        _parsed = pd.to_datetime(df[column], errors='coerce')
+                        _new_nats = int(_parsed.isna().sum()) - int(_original_nulls)
+                        if _new_nats > 0:
+                            warnings.warn(
+                                f"data_loader: {_new_nats} '{column}' value(s) could not be parsed as a date "
+                                f"and will be dropped. Check for invalid date values."
+                            )
+                        df[column] = _parsed
                         
                 elif data_type == 'float':
                     # Convert to float for consistent calculations
@@ -521,7 +549,12 @@ class DataLoader:
     def _clean_order_data(self, df):
         """Clean and standardize order data"""
         df = df.copy()
-        
+
+        dup_count = df.duplicated(keep='first').sum()
+        if dup_count > 0:
+            warnings.warn(f"data_loader: {dup_count} duplicate row(s) found in order data and removed")
+            df = df.drop_duplicates(keep='first')
+
         # Apply data type standardization first
         df = self._standardize_data_types(df, 'order')
         
@@ -533,16 +566,30 @@ class DataLoader:
         # Remove rows with missing critical data
         df = df.dropna(subset=['Date', 'Sku Code'])
         
+        # Warn about negative quantities (returns/credits) before filling
+        _neg_cases = int((df['Qty in Cases'] < 0).sum())
+        _neg_eaches = int((df['Qty in Eaches'] < 0).sum())
+        if _neg_cases > 0 or _neg_eaches > 0:
+            warnings.warn(
+                f"data_loader: {_neg_cases} negative Qty in Cases and {_neg_eaches} negative "
+                f"Qty in Eaches found — treated as returns/credits and kept in analysis"
+            )
+
         # Fill missing quantities with 0
         df['Qty in Cases'] = df['Qty in Cases'].fillna(0)
         df['Qty in Eaches'] = df['Qty in Eaches'].fillna(0)
-        
+
         return df
-    
+
     def _clean_sku_master(self, df):
         """Clean and standardize SKU master data"""
         df = df.copy()
-        
+
+        dup_count = df.duplicated(keep='first').sum()
+        if dup_count > 0:
+            warnings.warn(f"data_loader: {dup_count} duplicate row(s) found in SKU master data and removed")
+            df = df.drop_duplicates(keep='first')
+
         # Apply data type standardization first
         df = self._standardize_data_types(df, 'sku_master')
         
@@ -556,30 +603,49 @@ class DataLoader:
         
         # Fill missing values with defaults
         df['Case Config'] = df['Case Config'].fillna(1)
-        df['Pallet Fit'] = df['Pallet Fit'].fillna(1)
+        df['Pallet Fit'] = df['Pallet Fit'].fillna(config.DEFAULT_PALLET_FIT)
         
         return df
     
     def _clean_receipt_data(self, df):
         """Clean and standardize receipt data"""
         df = df.copy()
-        
+
+        dup_count = df.duplicated(keep='first').sum()
+        if dup_count > 0:
+            warnings.warn(f"data_loader: {dup_count} duplicate row(s) found in receipt data and removed")
+            df = df.drop_duplicates(keep='first')
+
         # Apply data type standardization first
         df = self._standardize_data_types(df, 'receipt')
         
         # Remove rows with missing critical data
         df = df.dropna(subset=['Receipt Date', 'SKU ID'])
         
+        # Warn about negative quantities (returns/credits) before filling
+        _neg_cases = int((df['Quantity in Cases'] < 0).sum())
+        _neg_eaches = int((df['Quantity in Eaches'] < 0).sum())
+        if _neg_cases > 0 or _neg_eaches > 0:
+            warnings.warn(
+                f"data_loader: {_neg_cases} negative Quantity in Cases and {_neg_eaches} negative "
+                f"Quantity in Eaches found — treated as returns/credits and kept in analysis"
+            )
+
         # Fill missing quantities with 0
         df['Quantity in Cases'] = df['Quantity in Cases'].fillna(0)
         df['Quantity in Eaches'] = df['Quantity in Eaches'].fillna(0)
-        
+
         return df
-    
+
     def _clean_inventory_data(self, df):
         """Clean and standardize inventory data"""
         df = df.copy()
-        
+
+        dup_count = df.duplicated(keep='first').sum()
+        if dup_count > 0:
+            warnings.warn(f"data_loader: {dup_count} duplicate row(s) found in inventory data and removed")
+            df = df.drop_duplicates(keep='first')
+
         # Apply data type standardization first
         df = self._standardize_data_types(df, 'inventory')
         

@@ -51,7 +51,7 @@ class OrderAnalysisCharts:
         # Create line chart
         chart = LineChart()
         chart.title = "Order Profile - Daily Trend"
-        chart.style = 2  # Professional style
+        chart.style = 10
         chart.width = self.default_width
         chart.height = self.default_height
         
@@ -102,58 +102,61 @@ class OrderAnalysisCharts:
                                  lines_ref: Reference,
                                  volume_ref: Reference) -> LineChart:
         """
-        Create Daily Order Lines & Case Equivalent Volume trend chart.
-        
+        Create Daily Order Lines & Case Equivalent Volume trend chart
+        with a secondary Y-axis so both metrics are readable at their
+        respective scales.
+
         Args:
             ws: Worksheet object (needed for Reference objects)
             dates_ref: Reference to date values (X-axis)
             lines_ref: Reference to Daily_Order_Lines data (with header)
             volume_ref: Reference to Daily_Case_Equivalent_Volume data (with header)
-            
+
         Returns:
-            LineChart object configured and ready to be placed
+            LineChart object configured with dual Y-axes
         """
-        # Create line chart
-        chart = LineChart()
-        chart.title = "Daily Order Lines & Case Equivalent Volume"
-        chart.style = 2  # Professional style
-        chart.width = self.default_width
-        chart.height = self.default_height
-        
-        # Add data series
-        chart.add_data(lines_ref, titles_from_data=True)
-        chart.add_data(volume_ref, titles_from_data=True)
-        
-        # Set categories (X-axis dates)
-        chart.set_categories(dates_ref)
-        
-        # Style the series
-        # Order Lines - Blue
-        if len(chart.series) > 0:
-            s1 = chart.series[0]
-            s1.graphicalProperties.line.solidFill = self.colors['blue']
-            s1.graphicalProperties.line.width = 25000  # Slightly thicker line
-            s1.smooth = False
-            
-        # Volume line - Green
-        if len(chart.series) > 1:
-            s2 = chart.series[1]
+        # Primary chart — Order Lines on left Y-axis
+        chart1 = LineChart()
+        chart1.title = "Daily Order Lines & Case Equivalent Volume"
+        chart1.style = 10
+        chart1.width = self.default_width
+        chart1.height = self.default_height
+
+        chart1.add_data(lines_ref, titles_from_data=True)
+        chart1.set_categories(dates_ref)
+
+        chart1.y_axis.axId = 100
+        chart1.y_axis.title = "Order Lines"
+        chart1.x_axis.title = "Date"
+        chart1.x_axis.tickLblPos = "low"
+        chart1.x_axis.majorGridlines = None
+        chart1.legend.position = 'b'
+
+        if chart1.series:
+            s = chart1.series[0]
+            s.graphicalProperties.line.solidFill = self.colors['blue']
+            s.graphicalProperties.line.width = 25000
+            s.smooth = False
+
+        # Secondary chart — Case Equivalent Volume on right Y-axis
+        chart2 = LineChart()
+        chart2.add_data(volume_ref, titles_from_data=True)
+
+        chart2.y_axis.axId = 200
+        chart2.y_axis.title = "Case Equiv. Volume"
+        chart2.y_axis.crosses = "max"  # places axis on the right side
+
+        # Merge secondary into primary
+        chart1 += chart2
+
+        # Style the volume series (now series[1] after merge)
+        if len(chart1.series) > 1:
+            s2 = chart1.series[1]
             s2.graphicalProperties.line.solidFill = self.colors['green']
-            s2.graphicalProperties.line.width = 25000  # Slightly thicker line
+            s2.graphicalProperties.line.width = 25000
             s2.smooth = False
-        
-        # Configure axes
-        chart.y_axis.title = "Count / Volume"
-        chart.x_axis.title = "Date"
-        chart.x_axis.tickLblPos = "low"
-        
-        # Remove gridlines for cleaner look
-        chart.x_axis.majorGridlines = None
-        
-        # Show legend for two series chart
-        chart.legend.position = 'b'  # Bottom
-        
-        return chart
+
+        return chart1
     
     def create_percentile_chart(self, ws, categories_ref: Reference,
                               data_refs: list) -> BarChart:

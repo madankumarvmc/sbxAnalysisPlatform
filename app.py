@@ -337,10 +337,28 @@ def create_variables_form():
         if section not in st.session_state.analysis_variables['manpower_analysis']:
             st.session_state.analysis_variables['manpower_analysis'][section] = config.DEFAULT_MANPOWER_ANALYSIS_PARAMS[section].copy()
     
+    # Global Settings Section (Expandable)
+    with st.expander("🌐 Global Settings", expanded=True):
+        st.markdown("**Pallet Fit Fallback**")
+        st.markdown(
+            "<small style='color:#666;'>Used only when your SKU master is missing Pallet Fit values. "
+            "Set this to the typical cases-per-pallet for your warehouse.</small>",
+            unsafe_allow_html=True
+        )
+        default_pallet_fit = st.number_input(
+            "Default Pallet Fit (cases per pallet)",
+            min_value=1, max_value=500,
+            value=st.session_state.analysis_variables['global'].get('default_pallet_fit', config.DEFAULT_PALLET_FIT),
+            step=5,
+            help="Fallback value when a SKU has no Pallet Fit in the SKU master. "
+                 "Does not override SKU master values — only fills gaps.",
+            key="default_pallet_fit"
+        )
+
     # Order Analysis Variables Section (Expandable)
     with st.expander("📈 Order Analysis Variables", expanded=True):
         col1, col2 = st.columns(2)
-        
+
         with col1:
             st.markdown("**ABC Classification Thresholds**")
             abc_a_threshold = st.slider(
@@ -624,6 +642,7 @@ def save_variables_configuration():
             'decimal_places': 2,
             'working_days_per_week': 5,
             'working_hours_per_day': 8,
+            'default_pallet_fit': st.session_state.get('default_pallet_fit', config.DEFAULT_PALLET_FIT),
         },
         'order_analysis': {
             'fms_fast_threshold': st.session_state.get('fms_fast_threshold', 70),

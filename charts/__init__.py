@@ -11,9 +11,11 @@ __version__ = "1.0.0"
 from .order_analysis_charts import OrderAnalysisCharts
 from .receipt_analysis_charts import ReceiptAnalysisCharts
 from .excel_chart_generator import ExcelChartGenerator
+from .abc_fms_analysis_charts import ABCFMSAnalysisCharts
 
 __all__ = [
     'OrderAnalysisCharts',
     'ReceiptAnalysisCharts',
-    'ExcelChartGenerator'
+    'ExcelChartGenerator',
+    'ABCFMSAnalysisCharts'
 ]

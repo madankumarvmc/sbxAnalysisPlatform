@@ -152,7 +152,8 @@ class ABCFMSAnalyzer:
             
             # Fill missing values with defaults
             sku_metrics['Case Config'] = sku_metrics['Case Config'].fillna(1)
-            sku_metrics['Pallet Fit'] = sku_metrics['Pallet Fit'].fillna(1)
+            default_pallet_fit = self.config.get('DEFAULT_PALLET_FIT', config.DEFAULT_PALLET_FIT)
+            sku_metrics['Pallet Fit'] = sku_metrics['Pallet Fit'].fillna(default_pallet_fit)
         
         # ABC Classification (Volume-based) - Using Case Equivalent Volume as primary metric
         sku_metrics = sku_metrics.sort_values('Total_Case_Equivalent_Volume', ascending=False).reset_index(drop=True)
@@ -177,16 +178,16 @@ class ABCFMSAnalyzer:
         # Keep legacy ABC classification for comparison
         sku_metrics['ABC_Category_Legacy'] = sku_metrics['Volume_Cumulative_Percent_Legacy'].apply(classify_abc)
         
-        # FMS Classification (Frequency-based)
-        # Calculate total days and order frequency
-        total_days = self.order_data['Date'].nunique()
-        sku_metrics['Order_Frequency_Percent'] = (sku_metrics['Days_Ordered'] / total_days * 100)
-        
+        # FMS Classification (Frequency-based) — ranked by order line share
+        # Each SKU's share of total order lines (sums to 100% across all SKUs)
+        total_order_lines = sku_metrics['Total_Order_Lines'].sum()
+        sku_metrics['Order_Frequency_Percent'] = (sku_metrics['Total_Order_Lines'] / total_order_lines * 100)
+
         # Sort by frequency for FMS classification
         sku_metrics_freq = sku_metrics.sort_values('Order_Frequency_Percent', ascending=False).reset_index(drop=True)
         sku_metrics_freq['Cumulative_Frequency'] = sku_metrics_freq['Order_Frequency_Percent'].cumsum()
-        total_frequency = sku_metrics_freq['Order_Frequency_Percent'].sum()
-        sku_metrics_freq['Frequency_Cumulative_Percent'] = (sku_metrics_freq['Cumulative_Frequency'] / total_frequency * 100)
+        # Cumulative already sums to 100% — no further division needed
+        sku_metrics_freq['Frequency_Cumulative_Percent'] = sku_metrics_freq['Cumulative_Frequency']
         
         def classify_fms(cumulative_percent):
             if cumulative_percent <= self.fms_thresholds['F_THRESHOLD']:
@@ -209,11 +210,21 @@ class ABCFMSAnalyzer:
         sku_metrics['ABC_FMS_Segment'] = sku_metrics['ABC_Category'] + '-' + sku_metrics['FMS_Category']
         
         # Calculate additional performance metrics using case equivalent volume as primary
-        sku_metrics['Case_Equivalent_Per_Order_Line'] = (sku_metrics['Total_Case_Equivalent_Volume'] / sku_metrics['Total_Order_Lines']).round(2)
-        sku_metrics['Case_Equivalent_Per_Day'] = (sku_metrics['Total_Case_Equivalent_Volume'] / sku_metrics['Days_Ordered']).round(2)
-        sku_metrics['Cases_Per_Order_Line'] = (sku_metrics['Total_Cases'] / sku_metrics['Total_Order_Lines']).round(2)
-        sku_metrics['Cases_Per_Day'] = (sku_metrics['Total_Cases'] / sku_metrics['Days_Ordered']).round(2)
-        sku_metrics['Order_Lines_Per_Day'] = (sku_metrics['Total_Order_Lines'] / sku_metrics['Days_Ordered']).round(2)
+        sku_metrics['Case_Equivalent_Per_Order_Line'] = (
+            sku_metrics['Total_Case_Equivalent_Volume'] / sku_metrics['Total_Order_Lines']
+        ).replace([np.inf, -np.inf], np.nan).fillna(0).round(2)
+        sku_metrics['Case_Equivalent_Per_Day'] = (
+            sku_metrics['Total_Case_Equivalent_Volume'] / sku_metrics['Days_Ordered']
+        ).replace([np.inf, -np.inf], np.nan).fillna(0).round(2)
+        sku_metrics['Cases_Per_Order_Line'] = (
+            sku_metrics['Total_Cases'] / sku_metrics['Total_Order_Lines']
+        ).replace([np.inf, -np.inf], np.nan).fillna(0).round(2)
+        sku_metrics['Cases_Per_Day'] = (
+            sku_metrics['Total_Cases'] / sku_metrics['Days_Ordered']
+        ).replace([np.inf, -np.inf], np.nan).fillna(0).round(2)
+        sku_metrics['Order_Lines_Per_Day'] = (
+            sku_metrics['Total_Order_Lines'] / sku_metrics['Days_Ordered']
+        ).replace([np.inf, -np.inf], np.nan).fillna(0).round(2)
         
         self.sku_classifications = sku_metrics
         
@@ -415,14 +426,18 @@ class ABCFMSAnalyzer:
         ).fillna(0)
         
         # Ensure all ABC-FMS combinations are present
-        abc_fms_combinations = ['A-F', 'A-M', 'B-F', 'B-M', 'B-S', 'C-F', 'C-M', 'C-S']
-        
-        # Reorder columns to match desired format (AF, AM, BF, BM, BS, CF, CM, CS)
-        for matrix in [category_sku_matrix, category_volume_matrix, category_lines_matrix]:
-            for col in abc_fms_combinations:
+        abc_fms_combinations = ['A-F', 'A-M', 'A-S', 'B-F', 'B-M', 'B-S', 'C-F', 'C-M', 'C-S']
+
+        # Add any missing combinations as zeros (in-place mutation works on DataFrame objects)
+        for col in abc_fms_combinations:
+            for matrix in [category_sku_matrix, category_volume_matrix, category_lines_matrix]:
                 if col not in matrix.columns:
                     matrix[col] = 0
-            matrix = matrix[abc_fms_combinations]
+
+        # Reorder columns explicitly — loop variable rebind doesn't modify originals
+        category_sku_matrix = category_sku_matrix[abc_fms_combinations]
+        category_volume_matrix = category_volume_matrix[abc_fms_combinations]
+        category_lines_matrix = category_lines_matrix[abc_fms_combinations]
         
         # Calculate percentage matrices (rounded to integers)
         category_volume_pct_matrix = (category_volume_matrix.div(category_volume_matrix.sum().sum()) * 100).round(0).astype(int)

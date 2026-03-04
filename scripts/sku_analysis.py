@@ -115,7 +115,7 @@ class SKUAnalyzer:
             'Qty in Cases': ['sum', 'mean', 'std', 'min', 'max'],
             'Qty in Eaches': ['sum', 'mean', 'std', 'min', 'max'],
             'Case_Equivalent_Volume': ['sum', 'mean', 'std', 'min', 'max']
-        }).round(2)
+        })
         
         # Flatten column names
         sku_metrics.columns = ['_'.join(col).strip() for col in sku_metrics.columns]
@@ -146,18 +146,31 @@ class SKUAnalyzer:
             'Case_Equivalent_Volume_max': 'Max_Case_Equivalent_Per_Line'
         }
         sku_metrics = sku_metrics.rename(columns=column_mapping)
-        
+
+        # Selectively round display-level columns only (not std devs used for CV calculation)
+        for col in ['Avg_Cases_Per_Line', 'Min_Cases_Per_Line', 'Max_Cases_Per_Line',
+                    'Avg_Eaches_Per_Line', 'Min_Eaches_Per_Line', 'Max_Eaches_Per_Line',
+                    'Avg_Case_Equivalent_Per_Line', 'Min_Case_Equivalent_Per_Line', 'Max_Case_Equivalent_Per_Line']:
+            if col in sku_metrics.columns:
+                sku_metrics[col] = sku_metrics[col].round(2)
+
         # Calculate additional performance metrics using case equivalent volume as primary
         total_days = self.order_data['Date'].nunique()
         sku_metrics['Activity_Rate'] = (sku_metrics['Days_Active'] / total_days * 100).round(2)
-        sku_metrics['Avg_Case_Equivalent_Per_Day'] = (sku_metrics['Total_Case_Equivalent_Volume'] / sku_metrics['Days_Active']).round(2)
-        sku_metrics['Avg_Cases_Per_Day'] = (sku_metrics['Total_Cases'] / sku_metrics['Days_Active']).round(2)
-        sku_metrics['Case_Equivalent_CV'] = (sku_metrics['Case_Equivalent_Std_Dev'] / sku_metrics['Avg_Case_Equivalent_Per_Line']).round(2)
-        sku_metrics['Cases_CV'] = (sku_metrics['Cases_Std_Dev'] / sku_metrics['Avg_Cases_Per_Line']).round(2)
-        
-        # Handle division by zero
-        sku_metrics['Case_Equivalent_CV'] = sku_metrics['Case_Equivalent_CV'].replace([np.inf, -np.inf], np.nan).fillna(0)
-        sku_metrics['Cases_CV'] = sku_metrics['Cases_CV'].replace([np.inf, -np.inf], np.nan).fillna(0)
+        # Guard against Days_Active = 0 (edge case from malformed data)
+        sku_metrics['Avg_Case_Equivalent_Per_Day'] = (
+            sku_metrics['Total_Case_Equivalent_Volume'] / sku_metrics['Days_Active']
+        ).replace([np.inf, -np.inf], np.nan).fillna(0).round(2)
+        sku_metrics['Avg_Cases_Per_Day'] = (
+            sku_metrics['Total_Cases'] / sku_metrics['Days_Active']
+        ).replace([np.inf, -np.inf], np.nan).fillna(0).round(2)
+        # CV: use 4 decimal places to avoid threshold boundary misclassification
+        sku_metrics['Case_Equivalent_CV'] = (
+            sku_metrics['Case_Equivalent_Std_Dev'] / sku_metrics['Avg_Case_Equivalent_Per_Line']
+        ).replace([np.inf, -np.inf], np.nan).fillna(0).round(4)
+        sku_metrics['Cases_CV'] = (
+            sku_metrics['Cases_Std_Dev'] / sku_metrics['Avg_Cases_Per_Line']
+        ).replace([np.inf, -np.inf], np.nan).fillna(0).round(4)
         
         # Add SKU master data if available
         if self.sku_master is not None:
@@ -169,15 +182,32 @@ class SKUAnalyzer:
             )
             
             # Calculate efficiency metrics (using case equivalent volume for primary calculations)
-            sku_metrics['Cases_Per_Pallet'] = sku_metrics['Pallet Fit'].fillna(1)
+            # Use the same default pallet fit as the converter for consistency
+            default_pallet_fit = self.config.get('DEFAULT_PALLET_FIT', config.DEFAULT_PALLET_FIT)
+            sku_metrics['Cases_Per_Pallet'] = sku_metrics['Pallet Fit'].fillna(default_pallet_fit)
             sku_metrics['Total_Case_Equivalent_Pallets'] = (sku_metrics['Total_Case_Equivalent_Volume'] / sku_metrics['Cases_Per_Pallet']).round(2)
             sku_metrics['Total_Pallets'] = (sku_metrics['Total_Cases'] / sku_metrics['Cases_Per_Pallet']).round(2)
+            # Ceiling pallets = actual pallets needed (round up fractional pallets per SKU)
+            ceiling_ce = np.ceil(sku_metrics['Total_Case_Equivalent_Volume'] / sku_metrics['Cases_Per_Pallet'])
+            sku_metrics['Pallet_Utilization_Rate'] = (
+                sku_metrics['Total_Case_Equivalent_Pallets'] / ceiling_ce.replace(0, np.nan) * 100
+            ).round(2)
         
         # Sort by case equivalent volume as primary metric
         sku_metrics = sku_metrics.sort_values('Total_Case_Equivalent_Volume', ascending=False).reset_index(drop=True)
-        
+
+        # Demand pattern classification (Syntetos-Boylan ADI / CV²)
+        pattern_df = self._classify_demand_patterns()
+        sku_metrics = sku_metrics.merge(pattern_df, on='Sku Code', how='left')
+        sku_metrics['Demand_Pattern'] = sku_metrics['Demand_Pattern'].fillna('Unknown')
+
+        # SKU lifecycle classification
+        lifecycle_df = self._classify_sku_lifecycle(sku_metrics)
+        sku_metrics = sku_metrics.merge(lifecycle_df, on='Sku Code', how='left')
+        sku_metrics['Lifecycle_Stage'] = sku_metrics['Lifecycle_Stage'].fillna('Unknown')
+
         self.sku_performance = sku_metrics
-        
+
         # Generate summary statistics using case equivalent volume as primary metric
         performance_summary = {
             'total_skus': len(sku_metrics),
@@ -193,7 +223,9 @@ class SKUAnalyzer:
             'high_variability_skus': len(sku_metrics[sku_metrics['Cases_CV'] > 1.0]),
             'daily_movers': len(sku_metrics[sku_metrics['Activity_Rate'] > 50]),
             'occasional_movers': len(sku_metrics[(sku_metrics['Activity_Rate'] <= 50) & (sku_metrics['Activity_Rate'] > 10)]),
-            'slow_movers': len(sku_metrics[sku_metrics['Activity_Rate'] <= 10])
+            'slow_movers': len(sku_metrics[sku_metrics['Activity_Rate'] <= 10]),
+            'demand_pattern_distribution': sku_metrics['Demand_Pattern'].value_counts().to_dict(),
+            'lifecycle_distribution'     : sku_metrics['Lifecycle_Stage'].value_counts().to_dict(),
         }
         
         return {
@@ -404,32 +436,36 @@ class SKUAnalyzer:
             self.analyze_sku_performance()
         
         # Analyze case configurations using case equivalent volume as primary metric
-        case_config_stats = self.sku_performance.groupby('Case Config').agg({
+        # dropna=False: include SKUs with missing Case Config so totals are complete
+        case_config_stats = self.sku_performance.groupby('Case Config', dropna=False).agg({
             'Sku Code': 'count',
             'Total_Case_Equivalent_Volume': 'sum',
             'Total_Cases': 'sum',
             'Total_Case_Equivalent_Pallets': 'sum',
             'Total_Pallets': 'sum'
         }).round(2)
-        
+
         case_config_stats.columns = ['SKU_Count', 'Total_Case_Equivalent_Volume', 'Total_Cases', 'Total_Case_Equivalent_Pallets', 'Total_Pallets']
         case_config_stats['Avg_Case_Equivalent_Per_SKU'] = (case_config_stats['Total_Case_Equivalent_Volume'] / case_config_stats['SKU_Count']).round(2)
         case_config_stats['Avg_Cases_Per_SKU'] = (case_config_stats['Total_Cases'] / case_config_stats['SKU_Count']).round(2)
         case_config_stats = case_config_stats.reset_index()
+        case_config_stats['Case Config'] = case_config_stats['Case Config'].fillna('Unknown')
         
-        # Pallet efficiency analysis using case equivalent volume as primary metric
-        pallet_efficiency = self.sku_performance.groupby('Pallet Fit').agg({
+        # Pallet efficiency analysis — aggregate SKU-level utilization rates by pallet fit group
+        pallet_efficiency = self.sku_performance.groupby('Pallet Fit', dropna=False).agg({
             'Sku Code': 'count',
             'Total_Case_Equivalent_Volume': 'sum',
             'Total_Cases': 'sum',
             'Total_Case_Equivalent_Pallets': 'sum',
-            'Total_Pallets': 'sum'
-        }).round(2)
-        
-        pallet_efficiency.columns = ['SKU_Count', 'Total_Case_Equivalent_Volume', 'Total_Cases', 'Total_Case_Equivalent_Pallets', 'Total_Pallets']
-        pallet_efficiency['Case_Equivalent_Utilization_Rate'] = ((pallet_efficiency['Total_Case_Equivalent_Volume'] / pallet_efficiency['Total_Case_Equivalent_Pallets']) / pallet_efficiency.index * 100).round(2)
-        pallet_efficiency['Utilization_Rate'] = ((pallet_efficiency['Total_Cases'] / pallet_efficiency['Total_Pallets']) / pallet_efficiency.index * 100).round(2)
-        pallet_efficiency = pallet_efficiency.reset_index()
+            'Total_Pallets': 'sum',
+            'Pallet_Utilization_Rate': 'mean'
+        }).reset_index()   # reset_index BEFORE any derived column computation
+
+        pallet_efficiency.columns = [
+            'Pallet Fit', 'SKU_Count', 'Total_Case_Equivalent_Volume', 'Total_Cases',
+            'Total_Case_Equivalent_Pallets', 'Total_Pallets', 'Avg_Pallet_Utilization_Rate'
+        ]
+        pallet_efficiency['Avg_Pallet_Utilization_Rate'] = pallet_efficiency['Avg_Pallet_Utilization_Rate'].round(2)
         
         return {
             'case_config_analysis': case_config_stats,
@@ -524,6 +560,92 @@ class SKUAnalyzer:
             }
         }
     
+    def _classify_demand_patterns(self) -> pd.DataFrame:
+        """
+        Classify each SKU by demand pattern using the Syntetos-Boylan (ADI / CV²) matrix.
+
+        ADI  (Average Demand Interval) = total_analysis_days / days_with_positive_demand
+        CV²  (Squared Coefficient of Variation) computed on active-day demand quantities only
+
+        Thresholds (Syntetos-Boylan 2005):
+          ADI < 1.32 and CV² < 0.49  → Smooth
+          ADI < 1.32 and CV² ≥ 0.49  → Erratic
+          ADI ≥ 1.32 and CV² < 0.49  → Intermittent
+          ADI ≥ 1.32 and CV² ≥ 0.49  → Lumpy
+        """
+        total_days = self.order_data['Date'].nunique()
+
+        # Daily demand per SKU (sum across all lines on each day)
+        daily = (
+            self.order_data.groupby(['Date', 'Sku Code'])['Qty in Cases']
+            .sum().reset_index()
+        )
+
+        # Only days with positive demand
+        active = daily[daily['Qty in Cases'] > 0]
+
+        # ADI: total_days / days_with_demand
+        adi_df = active.groupby('Sku Code')['Date'].nunique().reset_index()
+        adi_df.columns = ['Sku Code', 'Active_Days']
+        adi_df['ADI'] = (total_days / adi_df['Active_Days']).round(4)
+
+        # CV² on active-day demand quantities only
+        cv2_stats = active.groupby('Sku Code')['Qty in Cases'].agg(
+            _mean='mean', _std='std'
+        ).reset_index()
+        cv2_stats['CV_Squared'] = (
+            (cv2_stats['_std'] / cv2_stats['_mean'].replace(0, np.nan)) ** 2
+        ).fillna(0).round(4)
+
+        pattern_df = adi_df.merge(
+            cv2_stats[['Sku Code', 'CV_Squared']], on='Sku Code', how='left'
+        ).fillna(0)
+
+        def _pattern(row):
+            adi, cv2 = row['ADI'], row['CV_Squared']
+            if adi < 1.32 and cv2 < 0.49:
+                return 'Smooth'
+            if adi < 1.32:
+                return 'Erratic'
+            if cv2 < 0.49:
+                return 'Intermittent'
+            return 'Lumpy'
+
+        pattern_df['Demand_Pattern'] = pattern_df.apply(_pattern, axis=1)
+        return pattern_df[['Sku Code', 'ADI', 'CV_Squared', 'Demand_Pattern']]
+
+    def _classify_sku_lifecycle(self, sku_metrics: pd.DataFrame) -> pd.DataFrame:
+        """
+        Tag each SKU with a lifecycle stage based on recency and activity rate.
+
+        Stages:
+          New          – first order in the most recent 30% of the analysis window
+          Dead/Dormant – last order > 90 days before the end of the analysis period
+          Active       – last order recent AND activity_rate ≥ 50%
+          Declining    – last order recent BUT activity_rate < 50%
+        """
+        period_start = self.order_data['Date'].min()
+        period_end   = self.order_data['Date'].max()
+        total_days   = max((period_end - period_start).days, 1)
+
+        dormant_threshold = period_end - pd.Timedelta(days=90)
+        new_threshold     = period_start + pd.Timedelta(days=int(total_days * 0.70))
+
+        df = sku_metrics[['Sku Code', 'First_Order_Date',
+                           'Last_Order_Date', 'Activity_Rate']].copy()
+
+        def _lifecycle(row):
+            if row['Last_Order_Date'] < dormant_threshold:
+                return 'Dead/Dormant'
+            if row['First_Order_Date'] >= new_threshold:
+                return 'New'
+            if row['Activity_Rate'] >= 50:
+                return 'Active'
+            return 'Declining'
+
+        df['Lifecycle_Stage'] = df.apply(_lifecycle, axis=1)
+        return df[['Sku Code', 'Lifecycle_Stage']]
+
     def _filter_by_date_range(self, df):
         """Filter data by specified date range"""
         filtered_df = df.copy()

@@ -38,7 +38,8 @@ class ABCFMSAnalysisCharts:
         chart.type = "col"
         chart.grouping = "stacked"
         chart.overlap = 100
-        
+        chart.style = 10
+
         # Chart properties
         chart.title = "ABC-FMS Distribution Analysis"
         chart.x_axis.title = "Metrics"
@@ -63,12 +64,11 @@ class ABCFMSAnalysisCharts:
             
         # Series 2: CS (light blue - low performers)  
         if len(chart.series) > 2:
-            chart.series[2].graphicalProperties.solidFill = "87CEEB"  # Sky blue
+            chart.series[2].graphicalProperties.solidFill = "2E75B6"  # Corporate dark blue
         
         # Format y-axis as percentage
         chart.y_axis.numFmt = '0"%"'
-        chart.y_axis.majorGridlines = None
-        
+
         # Legend position
         chart.legend.position = 'r'
         

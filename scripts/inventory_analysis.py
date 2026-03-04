@@ -17,6 +17,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import warnings
 from typing import Optional, Dict, Any, List
+import config as config_module
 
 class InventoryAnalyzer:
     """
@@ -116,22 +117,24 @@ class InventoryAnalyzer:
         daily_values = inventory_pivot.values
         matrix_df['Grand Total'] = daily_values.sum(axis=1)
         matrix_df['Max'] = daily_values.max(axis=1)
-        matrix_df['90%ile'] = np.percentile(daily_values, 90, axis=1)
+        matrix_df['90%ile'] = np.nanpercentile(daily_values, 90, axis=1)
         
         # Add SKU master data if available
+        default_pallet_fit = self.config.get('DEFAULT_PALLET_FIT', config_module.DEFAULT_PALLET_FIT)
         if self.sku_master is not None:
             # Merge with SKU master for additional attributes
             sku_info = self.sku_master[['Sku Code', 'Pallet Fit', 'Category']].copy()
             sku_info.rename(columns={'Sku Code': 'SKU Code'}, inplace=True)
             matrix_df = matrix_df.merge(sku_info, on='SKU Code', how='left')
-            
+
             # Calculate pallet-related metrics
-            matrix_df['PalletFit'] = matrix_df['Pallet Fit'].fillna(180)  # Default pallet fit
+            matrix_df['PalletFit'] = matrix_df['Pallet Fit'].fillna(default_pallet_fit)
+            matrix_df['PalletFit'] = matrix_df['PalletFit'].clip(lower=1)  # guard against zero/negative
             matrix_df['#Pallets'] = (matrix_df['Max'] / matrix_df['PalletFit']).apply(np.ceil)
         else:
             # Default values if SKU master not available
-            matrix_df['PalletFit'] = 180
-            matrix_df['#Pallets'] = (matrix_df['Max'] / 180).apply(np.ceil)
+            matrix_df['PalletFit'] = default_pallet_fit
+            matrix_df['#Pallets'] = (matrix_df['Max'] / default_pallet_fit).apply(np.ceil)
             matrix_df['Category'] = 'N/A'
         
         # Add ABC classification if order data is available
@@ -151,12 +154,23 @@ class InventoryAnalyzer:
         matrix_df['#Bins'] = (matrix_df['#Pallets'] * 2).astype(int)  # Placeholder calculation
         matrix_df['#Pallet Positions'] = (matrix_df['#Pallets'] * 1.2).astype(int)  # Placeholder
         matrix_df['Area (sq.m)'] = (matrix_df['#Pallets'] * 1.5).round(2)  # Placeholder
-        
+
+        # Add demand-based metrics if order_data is available
+        demand_metrics = self._calculate_sku_demand_metrics(inventory_pivot)
+        if not demand_metrics.empty:
+            matrix_df = matrix_df.merge(
+                demand_metrics.rename(columns={'SKU ID': 'SKU Code'}),
+                on='SKU Code', how='left'
+            )
+
         # Reorder columns to match the required format
         date_columns = [col for col in matrix_df.columns if '.' in col and len(col.split('.')) == 3]
         fixed_columns = ['SKU Code'] + date_columns + [
-            'Grand Total', 'Max', '90%ile', 'PalletFit', '#Pallets', 
-            'Class', 'Category', 'BinType', '#Bins', '#Pallet Positions', 'Area (sq.m)'
+            'Grand Total', 'Max', '90%ile', 'PalletFit', '#Pallets',
+            'Class', 'Category', 'BinType', '#Bins', '#Pallet Positions', 'Area (sq.m)',
+            'Avg_Inventory_Cases', 'Avg_Daily_Demand', 'Demand_Std_Dev',
+            'Safety_Stock_Cases', 'Reorder_Point_Cases',
+            'Inventory_Turns', 'Days_of_Supply', 'Stock_Status'
         ]
         
         # Only include columns that exist
@@ -239,6 +253,20 @@ class InventoryAnalyzer:
             }
         }
         
+        # Inventory health aggregate metrics (only available when demand metrics were computed)
+        if self.order_data is not None and self.sku_inventory_matrix is not None:
+            mat = self.sku_inventory_matrix
+            if 'Inventory_Turns' in mat.columns:
+                stats['inventory_health'] = {
+                    'avg_inventory_turns'   : round(float(mat['Inventory_Turns'].mean(skipna=True)), 1),
+                    'median_inventory_turns': round(float(mat['Inventory_Turns'].median(skipna=True)), 1),
+                    'avg_days_of_supply'    : round(float(mat['Days_of_Supply'].mean(skipna=True)), 1),
+                    'skus_low_stock'        : int((mat['Stock_Status'] == 'Low Stock').sum()),
+                    'skus_excess_stock'     : int((mat['Stock_Status'] == 'Excess').sum()),
+                    'skus_no_demand'        : int((mat['Stock_Status'] == 'No Demand').sum()),
+                    'skus_ok'               : int((mat['Stock_Status'] == 'OK').sum()),
+                }
+
         self.inventory_statistics = stats
         return stats
     
@@ -280,6 +308,88 @@ class InventoryAnalyzer:
         
         return sku_volume[['SKU Code', 'ABC_Class']]
     
+    def _calculate_sku_demand_metrics(self, inventory_pivot) -> pd.DataFrame:
+        """
+        Compute demand-based inventory metrics per SKU using order_data.
+
+        Returns a DataFrame with columns:
+          SKU ID, Avg_Inventory_Cases, Avg_Daily_Demand, Demand_Std_Dev,
+          Safety_Stock_Cases, Reorder_Point_Cases, Inventory_Turns,
+          Days_of_Supply, Stock_Status
+        """
+        if self.order_data is None:
+            return pd.DataFrame(columns=['SKU ID'])
+
+        lead_time = self.inventory_params.get(
+            'DEFAULT_LEAD_TIME',
+            config_module.DEFAULT_INVENTORY_PARAMS['DEFAULT_LEAD_TIME']
+        )
+        ss_days = self.inventory_params.get(
+            'SAFETY_STOCK_DAYS',
+            config_module.DEFAULT_INVENTORY_PARAMS['SAFETY_STOCK_DAYS']
+        )
+
+        # Daily demand per SKU from order data (Sku Code == SKU ID after data_loader)
+        daily_demand = (
+            self.order_data.groupby(['Date', 'Sku Code'])['Qty in Cases']
+            .sum().reset_index()
+        )
+        daily_demand.rename(columns={'Sku Code': 'SKU ID'}, inplace=True)
+
+        # Per-SKU demand stats (averaged over ALL days in data, not just active days)
+        demand_stats = daily_demand.groupby('SKU ID')['Qty in Cases'].agg(
+            Avg_Daily_Demand='mean',
+            Demand_Std_Dev='std'
+        ).fillna(0).reset_index()
+
+        # Average inventory from pivot (mean across all snapshot days)
+        avg_inv = inventory_pivot.mean(axis=1).reset_index()
+        avg_inv.columns = ['SKU ID', 'Avg_Inventory_Cases']
+        avg_inv['Avg_Inventory_Cases'] = avg_inv['Avg_Inventory_Cases'].round(1)
+
+        df = avg_inv.merge(demand_stats, on='SKU ID', how='left').fillna(0)
+
+        # Safety stock: demand_std × z(95% service level=1.645) × sqrt(lead_time)
+        df['Safety_Stock_Cases'] = (
+            df['Demand_Std_Dev'] * 1.645 * np.sqrt(lead_time)
+        ).clip(lower=0).round(1)
+
+        # Reorder point: avg_daily_demand × lead_time + safety_stock
+        df['Reorder_Point_Cases'] = (
+            df['Avg_Daily_Demand'] * lead_time + df['Safety_Stock_Cases']
+        ).round(1)
+
+        # Inventory turns (annualised): (avg_daily_demand × 365) / avg_inventory
+        df['Inventory_Turns'] = (
+            df['Avg_Daily_Demand'] * 365 /
+            df['Avg_Inventory_Cases'].replace(0, np.nan)
+        ).replace([np.inf, -np.inf], np.nan).round(1)
+
+        # Days of Supply: avg_inventory / avg_daily_demand
+        df['Days_of_Supply'] = (
+            df['Avg_Inventory_Cases'] /
+            df['Avg_Daily_Demand'].replace(0, np.nan)
+        ).replace([np.inf, -np.inf], np.nan).round(1)
+
+        # Stock Status flag
+        def _stock_status(row):
+            if row['Avg_Daily_Demand'] == 0:
+                return 'No Demand'
+            dos = row['Days_of_Supply']
+            if pd.isna(dos):
+                return 'No Demand'
+            if dos < ss_days:
+                return 'Low Stock'
+            if dos > ss_days * 4:
+                return 'Excess'
+            return 'OK'
+
+        df['Stock_Status'] = df.apply(_stock_status, axis=1)
+
+        return df[['SKU ID', 'Avg_Inventory_Cases', 'Avg_Daily_Demand',
+                   'Demand_Std_Dev', 'Safety_Stock_Cases', 'Reorder_Point_Cases',
+                   'Inventory_Turns', 'Days_of_Supply', 'Stock_Status']]
+
     def _calculate_stockout_days(self) -> int:
         """
         Calculate number of days with stockouts.
@@ -288,7 +398,7 @@ class InventoryAnalyzer:
             int: Number of days with at least one SKU stocked out
         """
         # Group by date and check if any SKU has zero stock
-        daily_stockouts = self.inventory_data.groupby('Calendar Day').apply(
+        daily_stockouts = self.inventory_data.groupby('Calendar Day', dropna=False).apply(
             lambda x: (x['Total Stock in Cases (In Base Unit of Measure)'] == 0).any()
         )
         

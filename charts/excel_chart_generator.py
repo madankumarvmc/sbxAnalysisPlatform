@@ -6,7 +6,8 @@ This module handles the placement of charts in Excel workbooks, managing
 the creation of References and positioning of charts based on table locations.
 """
 
-from openpyxl.chart import Reference
+from openpyxl.chart import Reference, LineChart, BarChart, PieChart
+from openpyxl.chart.series import DataPoint
 from openpyxl.utils import get_column_letter
 from typing import Dict, Optional
 import pandas as pd
@@ -184,17 +185,48 @@ class ExcelChartGenerator:
     
     def add_order_percentile_chart(self, table_position: Dict, columns_gap: int = 2) -> bool:
         """
-        Add percentile analysis column chart.
-        
+        Add percentile analysis column chart (Total_Case_Equiv per percentile level).
+
         Args:
-            table_position: Dictionary with table location info
+            table_position: Dictionary with table location info:
+                - 'row': Header row of percentile table (1-based Excel indexing)
+                - 'col': Starting column (1-based)
+                - 'num_rows': Number of data rows (excluding header)
+                - 'num_cols': Number of columns in table
             columns_gap: Gap between table and chart
-            
+
         Returns:
             bool: Success status
         """
-        # To be implemented when needed
-        pass
+        try:
+            start_row  = table_position['row']
+            num_rows   = table_position['num_rows']
+            header_row = start_row
+            first_data = start_row + 1
+            last_data  = start_row + num_rows
+
+            # Percentile labels (col 1, data rows only — no header needed as categories)
+            categories_ref = Reference(self.ws, min_col=1,
+                                       min_row=first_data, max_row=last_data)
+            # Total_Case_Equiv is column 8; include header row for series name
+            case_equiv_ref = Reference(self.ws, min_col=8,
+                                       min_row=header_row, max_row=last_data)
+
+            chart = self.order_charts.create_percentile_chart(
+                self.ws, categories_ref, [case_equiv_ref]
+            )
+            if chart:
+                chart_position = self._calculate_chart_position(
+                    table_position, placement='right', gap=columns_gap
+                )
+                self.ws.add_chart(chart, chart_position)
+
+            print(f"✅ Order percentile chart added")
+            return True
+
+        except Exception as e:
+            print(f"⚠️ Could not add order percentile chart: {str(e)}")
+            return False
     
     def add_receipt_daily_trend_chart(self, table_position: Dict, columns_gap: int = 2) -> bool:
         """
@@ -383,6 +415,55 @@ class ExcelChartGenerator:
             print(f"⚠️ Could not add ABC-FMS distribution chart: {str(e)}")
             return False
     
+    def add_sku_top_skus_chart(self, table_position: Dict, sku_col_idx: int,
+                               volume_col_idx: int, num_skus: int = 10,
+                               columns_gap: int = 2) -> bool:
+        """
+        Add horizontal bar chart of top N SKUs by volume to the SKU Analysis sheet.
+
+        Args:
+            table_position: Dictionary with table location info:
+                - 'row': Header row of SKU table (1-based Excel indexing)
+                - 'col': Starting column (1-based)
+                - 'num_rows': Number of data rows (excluding header)
+                - 'num_cols': Number of columns in table
+            sku_col_idx: Column index (1-based) of SKU code column
+            volume_col_idx: Column index (1-based) of volume data column
+            num_skus: Number of top SKUs to chart (default 10)
+            columns_gap: Gap between table and chart
+
+        Returns:
+            bool: Success status
+        """
+        try:
+            start_row  = table_position['row']
+            num_rows   = min(table_position['num_rows'], num_skus)
+            header_row = start_row
+            last_row   = start_row + num_rows
+
+            # SKU codes (data rows only, no header — used as categories)
+            sku_ref = Reference(self.ws, min_col=sku_col_idx,
+                                min_row=header_row + 1, max_row=last_row)
+            # Volume column — include header row for series name
+            volume_ref = Reference(self.ws, min_col=volume_col_idx,
+                                   min_row=header_row, max_row=last_row)
+
+            chart = self.order_charts.create_top_skus_chart(
+                self.ws, sku_ref, volume_ref, num_skus=num_skus
+            )
+            if chart:
+                chart_position = self._calculate_chart_position(
+                    table_position, placement='right', gap=columns_gap
+                )
+                self.ws.add_chart(chart, chart_position)
+
+            print(f"✅ Top {num_skus} SKUs chart added")
+            return True
+
+        except Exception as e:
+            print(f"⚠️ Could not add top SKUs chart: {str(e)}")
+            return False
+
     # Helper methods
     def _create_reference(self, col: int, start_row: int, end_row: int, 
                          include_header: bool = False) -> Reference:
@@ -433,5 +514,174 @@ class ExcelChartGenerator:
             # Default to right
             col = table_position['col'] + table_position['num_cols'] + gap
             row = table_position['row']
-            
+        return f"{get_column_letter(col)}{row}"
+
+    # ── New charts: Inventory Analysis ───────────────────────────────────────
+
+    def add_inventory_stock_trend_chart(self, daily_start_col: int, num_daily_rows: int,
+                                        anchor: str) -> bool:
+        """Line chart: daily total stock in cases over time.
+
+        Args:
+            daily_start_col: 1-based Excel column of daily_summary's Date column.
+            num_daily_rows:  Number of data rows (excluding header).
+            anchor:          Cell reference for chart top-left (e.g. 'AH1').
+        """
+        try:
+            date_ref  = Reference(self.ws,
+                                  min_col=daily_start_col,
+                                  min_row=2, max_row=num_daily_rows + 1)
+            cases_ref = Reference(self.ws,
+                                  min_col=daily_start_col + 1,   # #Cases column
+                                  min_row=1, max_row=num_daily_rows + 1)  # include header
+
+            chart = LineChart()
+            chart.title        = "Daily Total Stock (Cases)"
+            chart.style        = 10
+            chart.y_axis.title = "Cases"
+            chart.x_axis.title = "Date"
+            chart.width  = 20
+            chart.height = 10
+            chart.add_data(cases_ref, titles_from_data=True)
+            chart.set_categories(date_ref)
+            chart.series[0].graphicalProperties.line.solidFill = '4472C4'
+            chart.series[0].graphicalProperties.line.width     = 20000
+
+            self.ws.add_chart(chart, anchor)
+            return True
+        except Exception as e:
+            print(f"Warning: Could not create inventory stock trend chart: {e}")
+            return False
+
+    def add_inventory_stock_status_chart(self, pie_start_col: int, pie_start_row: int,
+                                         num_rows: int, anchor: str) -> bool:
+        """Pie chart: SKU count by stock status (Low / Excess / OK / No Demand).
+
+        Args:
+            pie_start_col: 1-based Excel column of the 2-column helper table (Status | Count).
+            pie_start_row: 1-based Excel row of the helper table header.
+            num_rows:      Number of data rows (4 for the 4 statuses).
+            anchor:        Cell reference for chart top-left.
+        """
+        try:
+            labels_ref = Reference(self.ws,
+                                   min_col=pie_start_col,
+                                   min_row=pie_start_row + 1,
+                                   max_row=pie_start_row + num_rows)
+            data_ref   = Reference(self.ws,
+                                   min_col=pie_start_col + 1,
+                                   min_row=pie_start_row,       # include header for legend title
+                                   max_row=pie_start_row + num_rows)
+
+            chart = PieChart()
+            chart.title  = "Stock Status Distribution (SKUs)"
+            chart.style  = 10
+            chart.width  = 12
+            chart.height = 10
+            chart.add_data(data_ref, titles_from_data=True)
+            chart.set_categories(labels_ref)
+
+            # Colour slices: Low=red, Excess=orange, OK=green, No Demand=gray
+            colors = ['FF0000', 'ED7D31', '70AD47', 'A5A5A5']
+            for i, color in enumerate(colors):
+                pt = DataPoint(idx=i)
+                pt.graphicalProperties.solidFill = color
+                chart.series[0].dPt.append(pt)
+
+            self.ws.add_chart(chart, anchor)
+            return True
+        except Exception as e:
+            print(f"Warning: Could not create stock status pie chart: {e}")
+            return False
+
+    # ── New charts: Manpower Analysis ────────────────────────────────────────
+
+    def add_manpower_pick_type_chart(self, table_position: Dict,
+                                     columns_gap: int = 2) -> bool:
+        """Column chart: order lines by pick type (Case / Each / Mixed / No Volume).
+
+        Args:
+            table_position: {'row', 'col', 'num_rows', 'num_cols'} — all 1-based Excel.
+                            row = header row of the DataFrame.
+            columns_gap:    Column gap between table and chart.
+        """
+        try:
+            start_row = table_position['row']
+            start_col = table_position['col']
+            num_rows  = table_position['num_rows']
+
+            cat_ref  = Reference(self.ws,
+                                 min_col=start_col,
+                                 min_row=start_row + 1,       # data rows only
+                                 max_row=start_row + num_rows)
+            data_ref = Reference(self.ws,
+                                 min_col=start_col + 1,       # Order Lines column
+                                 min_row=start_row,           # include header for legend
+                                 max_row=start_row + num_rows)
+
+            chart = BarChart()
+            chart.type         = "col"
+            chart.title        = "Pick Type Distribution — Order Lines"
+            chart.y_axis.title = "Order Lines"
+            chart.style = 10
+            chart.width  = 15
+            chart.height = 10
+            chart.add_data(data_ref, titles_from_data=True)
+            chart.set_categories(cat_ref)
+            chart.series[0].graphicalProperties.solidFill = '4472C4'
+
+            anchor_col   = table_position['col'] + table_position['num_cols'] + columns_gap
+            chart_anchor = f"{get_column_letter(anchor_col)}{start_row}"
+            self.ws.add_chart(chart, chart_anchor)
+            return True
+        except Exception as e:
+            print(f"Warning: Could not create pick type chart: {e}")
+            return False
+
+    def add_manpower_hourly_profile_chart(self, table_position: Dict,
+                                          section_title: str = 'Picking',
+                                          columns_gap: int = 2) -> bool:
+        """Column chart: staff required by hour across the working day.
+
+        Args:
+            table_position: {'row', 'col', 'num_rows', 'num_cols'} — all 1-based Excel.
+                            Columns expected: hour, ..., staff_required (last column).
+            section_title:  'Picking' or 'Receiving' — used in chart title.
+            columns_gap:    Column gap between table and chart.
+        """
+        try:
+            start_row = table_position['row']
+            start_col = table_position['col']
+            num_rows  = table_position['num_rows']
+            num_cols  = table_position['num_cols']
+
+            cat_ref  = Reference(self.ws,
+                                 min_col=start_col,              # hour column
+                                 min_row=start_row + 1,
+                                 max_row=start_row + num_rows)
+            data_ref = Reference(self.ws,
+                                 min_col=start_col + num_cols - 1,  # last col = staff_required
+                                 min_row=start_row,              # include header for legend
+                                 max_row=start_row + num_rows)
+
+            chart = BarChart()
+            chart.type         = "col"
+            chart.title        = f"{section_title} — Hourly Staffing Profile"
+            chart.y_axis.title = "Staff Required"
+            chart.x_axis.title = "Hour"
+            chart.style = 10
+            chart.width  = 20
+            chart.height = 10
+            chart.add_data(data_ref, titles_from_data=True)
+            chart.set_categories(cat_ref)
+            chart.series[0].graphicalProperties.solidFill = 'ED7D31'
+
+            anchor_col   = start_col + num_cols + columns_gap
+            chart_anchor = f"{get_column_letter(anchor_col)}{start_row}"
+            self.ws.add_chart(chart, chart_anchor)
+            return True
+        except Exception as e:
+            print(f"Warning: Could not create hourly staffing chart: {e}")
+            return False
+
         return f"{get_column_letter(col)}{row}"

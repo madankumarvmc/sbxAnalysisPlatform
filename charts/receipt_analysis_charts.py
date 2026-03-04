@@ -50,7 +50,7 @@ class ReceiptAnalysisCharts:
         # Create line chart
         chart = LineChart()
         chart.title = "Receipts Data - Daily Trend"
-        chart.style = 2  # Professional style
+        chart.style = 10
         chart.width = self.default_width
         chart.height = self.default_height
         
@@ -113,7 +113,7 @@ class ReceiptAnalysisCharts:
         # Create line chart
         chart = LineChart()
         chart.title = "Daily Receipt Case Equivalent Volume"
-        chart.style = 2  # Professional style
+        chart.style = 10
         chart.width = self.default_width
         chart.height = self.default_height
         

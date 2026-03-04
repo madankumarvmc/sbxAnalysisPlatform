@@ -142,9 +142,16 @@ class ReceiptAnalyzer:
             'analysis_date': datetime.now(),
             'data_summary': self._get_data_summary(),
             'daily_patterns': self.analyze_daily_patterns(),
-            'percentile_analysis': self.analyze_percentiles()
+            'percentile_analysis': self.analyze_percentiles(),
+            'volume_trends': self.analyze_volume_trends(),
+            'supplier_performance': self.analyze_supplier_performance(),
+            'receiving_efficiency': self.analyze_receiving_efficiency(),
+            'dock_utilization': self.analyze_dock_utilization(),
+            'sku_patterns': self.analyze_sku_patterns(),
+            'lead_times': self.analyze_lead_times(),
+            'recommendations': self.generate_recommendations()
         }
-        
+
         print("✅ Receipt analysis completed successfully")
         return results
     
@@ -255,17 +262,18 @@ class ReceiptAnalyzer:
         # Rename columns to match the pattern shown in screenshot
         daily_comprehensive = daily_comprehensive.rename(columns={
             'Truck No': '#Trucks',
-            'Shipment No': '#Shipments', 
+            'Shipment No': '#Shipments',
             'Lines_Count': '#Lines',
             'SKU ID': '#SKUs',
-            'Quantity in Cases': '#Cases'
+            'Quantity in Cases': '#Cases',
+            'Case_Equivalent_Volume': 'Case_Equiv_Volume'
         })
-        
+
         # Calculate percentiles for all metrics (for horizontal table like in screenshot)
-        metrics = ['#Trucks', '#Shipments', '#Lines', '#SKUs', '#Cases']
-        
+        metrics = ['#Trucks', '#Shipments', '#Lines', '#SKUs', '#Cases', 'Case_Equiv_Volume']
+
         horizontal_percentiles = {}
-        
+
         # Add max values
         horizontal_percentiles['Max'] = {}
         for metric in metrics:
@@ -503,8 +511,10 @@ class ReceiptAnalyzer:
         if self.daily_patterns is None:
             self.analyze_daily_patterns()
         
-        # Assume standard dock capacity (can be made configurable)
-        max_trucks_per_day = 20  # Configurable parameter
+        receipt_params = self.config.get('RECEIPT_PARAMS', {})
+        max_trucks_per_day = receipt_params.get(
+            'DOCK_CAPACITY_TRUCKS', config.DEFAULT_RECEIPT_PARAMS['DOCK_CAPACITY_TRUCKS']
+        )
         
         dock_utilization = self.daily_patterns.copy()
         dock_utilization['Dock_Utilization_Percent'] = (dock_utilization['Daily_Trucks'] / max_trucks_per_day * 100).round(2)
@@ -631,32 +641,45 @@ class ReceiptAnalyzer:
     
     def analyze_lead_times(self):
         """
-        Analyze lead times between orders and receipts (if order data available).
-        
+        Compute inter-receipt intervals per SKU as a proxy for replenishment lead time.
+
+        Note: OrderData contains outbound customer orders, not purchase orders, so direct
+        order-to-receipt matching is not meaningful. Inter-receipt interval = days between
+        consecutive receipt events for the same SKU — this is a reliable proxy for
+        effective replenishment cycle time observable from the data.
+
         Returns:
-            dict: Lead time analysis results
+            dict: Inter-receipt interval statistics at portfolio and SKU level
         """
-        if self.order_data is None:
-            return {'error': 'Order data not available for lead time analysis'}
-        
-        print("⏰ Analyzing lead times...")
-        
-        # This is a simplified lead time analysis
-        # In practice, you'd need more sophisticated matching logic
-        
-        # Calculate average time between order and receipt dates
-        order_dates = self.order_data['Date'].unique()
-        receipt_dates = self.receipt_data['Receipt Date'].unique()
-        
-        # Simple analysis: average days between order activity and receipt activity
-        avg_order_date = pd.to_datetime(order_dates).mean()
-        avg_receipt_date = pd.to_datetime(receipt_dates).mean()
-        avg_lead_time_days = (avg_receipt_date - avg_order_date).days
-        
+        print("⏰ Analyzing inter-receipt intervals (replenishment lead time proxy)...")
+
+        sorted_r = self.receipt_data.sort_values(['SKU ID', 'Receipt Date']).copy()
+        sorted_r['Prev_Receipt_Date'] = sorted_r.groupby('SKU ID')['Receipt Date'].shift(1)
+        sorted_r['Inter_Receipt_Days'] = (
+            sorted_r['Receipt Date'] - sorted_r['Prev_Receipt_Date']
+        ).dt.days
+
+        intervals = sorted_r.dropna(subset=['Inter_Receipt_Days'])
+
+        if len(intervals) == 0:
+            return {'error': 'Insufficient repeat receipts for interval analysis'}
+
+        # Per-SKU summary
+        sku_intervals = intervals.groupby('SKU ID')['Inter_Receipt_Days'].agg(
+            Avg_Interval_Days='mean',
+            Std_Interval_Days='std',
+            Min_Interval_Days='min',
+            Max_Interval_Days='max',
+            Num_Intervals='count'
+        ).reset_index().round(1)
+
         return {
-            'estimated_avg_lead_time_days': avg_lead_time_days,
-            'note': 'Simplified lead time calculation based on average order and receipt dates',
-            'recommendation': 'Implement detailed order-receipt matching for accurate lead time analysis'
+            'avg_inter_receipt_days'   : round(float(intervals['Inter_Receipt_Days'].mean()), 1),
+            'median_inter_receipt_days': round(float(intervals['Inter_Receipt_Days'].median()), 1),
+            'p95_inter_receipt_days'   : round(float(np.percentile(intervals['Inter_Receipt_Days'], 95)), 1),
+            'std_inter_receipt_days'   : round(float(intervals['Inter_Receipt_Days'].std()), 1),
+            'sku_intervals'            : sku_intervals,
+            'note': 'Inter-receipt interval = days between consecutive receipt events per SKU'
         }
     
     def generate_recommendations(self):
@@ -671,24 +694,23 @@ class ReceiptAnalyzer:
         recommendations = []
         
         # Dock utilization recommendations
-        if hasattr(self, 'dock_utilization'):
-            dock_util = self.analyze_dock_utilization()
-            avg_utilization = dock_util['avg_utilization']
-            
-            if avg_utilization > 80:
-                recommendations.append({
-                    'category': 'Dock Capacity',
-                    'priority': 'High',
-                    'recommendation': f'High dock utilization ({avg_utilization:.1f}%) - consider capacity expansion',
-                    'impact': 'Reduced waiting times and improved efficiency'
-                })
-            elif avg_utilization < 40:
-                recommendations.append({
-                    'category': 'Dock Efficiency',
-                    'priority': 'Medium',
-                    'recommendation': f'Low dock utilization ({avg_utilization:.1f}%) - optimize scheduling',
-                    'impact': 'Better resource utilization'
-                })
+        dock_util = self.analyze_dock_utilization()
+        avg_utilization = dock_util['avg_utilization']
+
+        if avg_utilization > 80:
+            recommendations.append({
+                'category': 'Dock Capacity',
+                'priority': 'High',
+                'recommendation': f'High dock utilization ({avg_utilization:.1f}%) - consider capacity expansion',
+                'impact': 'Reduced waiting times and improved efficiency'
+            })
+        elif avg_utilization < 40:
+            recommendations.append({
+                'category': 'Dock Efficiency',
+                'priority': 'Medium',
+                'recommendation': f'Low dock utilization ({avg_utilization:.1f}%) - optimize scheduling',
+                'impact': 'Better resource utilization'
+            })
         
         # Supplier performance recommendations
         supplier_perf = self.analyze_supplier_performance()

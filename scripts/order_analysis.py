@@ -132,6 +132,7 @@ class OrderAnalyzer:
         daily_data['Day_of_Week'] = daily_data['Date'].dt.day_name()
         daily_data['Week_Number'] = daily_data['Date'].dt.isocalendar().week
         daily_data['Month'] = daily_data['Date'].dt.month_name()
+        daily_data['Month_Period'] = daily_data['Date'].dt.to_period('M')
         
         # Calculate moving averages (including case equivalent volume)
         daily_data['Cases_7Day_MA'] = daily_data['Daily_Cases'].rolling(window=7, center=True).mean()
@@ -263,9 +264,6 @@ class OrderAnalyzer:
             'Pallet_Equivalent_Volume': 'sum' # Total_Pallet_Equiv
         }).reset_index()
         
-        # Add distinct customers calculation (using Order No. as proxy for now)
-        daily_comprehensive['Distinct_Customers'] = daily_comprehensive['Order No.']
-        
         # Rename columns for clarity
         daily_comprehensive = daily_comprehensive.rename(columns={
             'Order No.': 'Distinct_Orders',
@@ -278,7 +276,7 @@ class OrderAnalyzer:
         })
         
         # Calculate percentiles for all metrics (for horizontal table)
-        metrics = ['Distinct_Customers', 'Distinct_Shipments', 'Distinct_Orders', 'Distinct_SKUs', 
+        metrics = ['Distinct_Shipments', 'Distinct_Orders', 'Distinct_SKUs',
                   'Qty_Ordered_Cases', 'Qty_Ordered_Eaches', 'Total_Case_Equiv', 'Total_Pallet_Equiv']
         
         horizontal_percentiles = {}
@@ -323,7 +321,7 @@ class OrderAnalyzer:
             'Order No.': 'nunique',
             'Qty in Cases': ['sum', 'mean'],
             'Qty in Eaches': ['sum', 'mean']
-        }).round(2)
+        })
         
         # Flatten column names
         sku_stats.columns = ['_'.join(col).strip() for col in sku_stats.columns]
@@ -341,15 +339,16 @@ class OrderAnalyzer:
         }
         sku_stats = sku_stats.rename(columns=column_mapping)
         
-        # Calculate total days in dataset for frequency calculation
-        total_days = self.order_data['Date'].nunique()
-        sku_stats['Order_Frequency_Percent'] = (sku_stats['Days_Ordered'] / total_days * 100).round(2)
-        
+        # Standard Pareto approach: each SKU's share of total order lines.
+        # These percentages sum to exactly 100%, so cumsum reaches 100 directly.
+        total_order_lines = len(self.order_data)
+        sku_stats['Order_Frequency_Percent'] = (sku_stats['Total_Order_Lines'] / total_order_lines * 100).round(2)
+
         # Sort by frequency for FMS classification
         sku_stats = sku_stats.sort_values('Order_Frequency_Percent', ascending=False).reset_index(drop=True)
-        
-        # Apply FMS classification
-        sku_stats['Cumulative_Frequency_Percent'] = sku_stats['Order_Frequency_Percent'].cumsum() / sku_stats['Order_Frequency_Percent'].sum() * 100
+
+        # Cumulative % reaches 100 directly — no further division needed
+        sku_stats['Cumulative_Frequency_Percent'] = sku_stats['Order_Frequency_Percent'].cumsum().round(2)
         
         def classify_fms(cumulative_freq):
             if cumulative_freq <= self.fms_thresholds['F_THRESHOLD']:
@@ -433,20 +432,21 @@ class OrderAnalyzer:
         if self.daily_summary is None:
             self.analyze_daily_patterns()
         
-        # Calculate monthly trends
-        monthly_data = self.daily_summary.groupby('Month').agg({
+        # Calculate monthly trends — group by Period for correct chronological ordering
+        monthly_data = self.daily_summary.groupby('Month_Period').agg({
             'Daily_Cases': ['sum', 'mean', 'count'],
             'Daily_Orders': ['sum', 'mean']
         }).round(2)
-        
-        # Flatten column names
+
+        # Flatten column names, sort chronologically, then create display label
         monthly_data.columns = ['_'.join(col).strip() for col in monthly_data.columns]
-        monthly_data = monthly_data.reset_index()
-        
+        monthly_data = monthly_data.sort_values('Month_Period').reset_index()
+        monthly_data['Month'] = monthly_data['Month_Period'].dt.strftime('%b-%Y')
+
         # Calculate growth rates (if multiple months available)
         growth_analysis = {}
         if len(monthly_data) > 1:
-            monthly_data = monthly_data.sort_values('Month')
+            monthly_data = monthly_data.sort_values('Month_Period')
             monthly_data['Cases_Growth'] = monthly_data['Daily_Cases_sum'].pct_change() * 100
             monthly_data['Orders_Growth'] = monthly_data['Daily_Orders_sum'].pct_change() * 100
             
@@ -539,11 +539,11 @@ class OrderAnalyzer:
         if self.daily_summary is None:
             self.analyze_daily_patterns()
         
-        # ✅ FIXED: Add case equivalent volume and pick type classification
+        # Add case equivalent volume and pick type classification
         order_data_enhanced = self.converter.add_case_equivalent_columns(
             self.order_data
         )
-        order_data_enhanced = self._classify_pick_types_enhanced(order_data_enhanced)
+        order_data_enhanced = self.converter._classify_pick_types(order_data_enhanced)
         
         # ✅ FIXED: Overall statistics including case equivalent volume
         total_orders = self.order_data['Order No.'].nunique()
@@ -557,90 +557,156 @@ class OrderAnalyzer:
         date_range = (self.order_data['Date'].max() - self.order_data['Date'].min()).days
         months_in_data = max(1, date_range / 30.44)  # Average days per month
         days_in_data = self.order_data['Date'].nunique()
-        
-        # ✅ FIXED: Each picks statistics with case equivalent volume
+
+        # Annualisation factor: scale from operating days in dataset to a full working year
+        working_days_per_week = self.config.get('MANPOWER_PARAMS', {}).get(
+            'WORKING_DAYS_PER_WEEK', config.BUSINESS_CALENDAR['WORKING_DAYS_PER_WEEK']
+        )
+        working_days_per_year = 52 * working_days_per_week
+        ann_factor = working_days_per_year / days_in_data if days_in_data > 0 else 1.0
+
+        # Each picks statistics (order lines with only eaches, no cases)
         each_picks = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Each_Pick']
         each_orders = each_picks['Order No.'].nunique() if len(each_picks) > 0 else 0
         each_lines = len(each_picks)
-        each_eaches = each_picks['Qty in Eaches'].sum() if len(each_picks) > 0 else 0
-        each_case_equivalent_volume = each_picks['Case_Equivalent_Volume'].sum() if len(each_picks) > 0 else 0  # ← NEW
-        
-        # ✅ FIXED: Case picks statistics with case equivalent volume
+        each_case_equivalent_volume = each_picks['Case_Equivalent_Volume'].sum() if len(each_picks) > 0 else 0
+
+        # Case picks statistics (order lines with only cases, no eaches)
         case_picks = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Case_Pick']
         case_orders = case_picks['Order No.'].nunique() if len(case_picks) > 0 else 0
         case_lines = len(case_picks)
-        case_cases = case_picks['Qty in Cases'].sum() if len(case_picks) > 0 else 0
-        case_eaches = case_picks['Qty in Eaches'].sum() if len(case_picks) > 0 else 0
-        case_case_equivalent_volume = case_picks['Case_Equivalent_Volume'].sum() if len(case_picks) > 0 else 0  # ← NEW
-        
+        case_case_equivalent_volume = case_picks['Case_Equivalent_Volume'].sum() if len(case_picks) > 0 else 0
+
+        # Mixed picks statistics (order lines with both cases and eaches)
+        mixed_picks = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Mixed_Pick']
+        mixed_orders = mixed_picks['Order No.'].nunique() if len(mixed_picks) > 0 else 0
+        mixed_lines = len(mixed_picks)
+        mixed_case_equivalent_volume = mixed_picks['Case_Equivalent_Volume'].sum() if len(mixed_picks) > 0 else 0
+
+        # Daily volumes per pick type — used for design_peak (95th percentile)
+        each_daily_vol = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Each_Pick'].groupby('Date')['Case_Equivalent_Volume'].sum()
+        case_daily_vol = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Case_Pick'].groupby('Date')['Case_Equivalent_Volume'].sum()
+        mixed_daily_vol = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Mixed_Pick'].groupby('Date')['Case_Equivalent_Volume'].sum()
+        each_daily_lines_s = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Each_Pick'].groupby('Date').size()
+        case_daily_lines_s = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Case_Pick'].groupby('Date').size()
+        mixed_daily_lines_s = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Mixed_Pick'].groupby('Date').size()
+        each_daily_orders_s = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Each_Pick'].groupby('Date')['Order No.'].nunique()
+        case_daily_orders_s = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Case_Pick'].groupby('Date')['Order No.'].nunique()
+        mixed_daily_orders_s = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Mixed_Pick'].groupby('Date')['Order No.'].nunique()
+
+        def _p95(series):
+            return round(float(np.percentile(series, 95)), 2) if len(series) > 0 else 0.0
+
+        # Compute actual monthly peaks from grouped daily summary (Bug 9 fix)
+        if self.daily_summary is not None and 'Month_Period' in self.daily_summary.columns:
+            monthly_grouped = self.daily_summary.groupby('Month_Period').agg({
+                'Daily_Orders': 'sum',
+                'Daily_Order_Lines': 'sum',
+                'Daily_Case_Equivalent_Volume': 'sum'
+            })
+            monthly_peak_orders = int(monthly_grouped['Daily_Orders'].max())
+            monthly_peak_lines = int(monthly_grouped['Daily_Order_Lines'].max())
+            monthly_peak_volume = round(float(monthly_grouped['Daily_Case_Equivalent_Volume'].max()), 2)
+        else:
+            monthly_peak_orders = round(self.daily_summary['Daily_Orders'].max() * 30, 0)
+            monthly_peak_lines = round(total_lines / months_in_data * 1.2, 0)
+            monthly_peak_volume = round(self.daily_summary['Daily_Case_Equivalent_Volume'].max() * 30, 2)
+
         # Build comprehensive statistics
         outbound_stats = {
             'overall': {
                 'annual_total': {
-                    'orders': round(total_orders * (365.25 / date_range), 0) if date_range > 0 else total_orders,
-                    'lines': round(total_lines * (365.25 / date_range), 0) if date_range > 0 else total_lines,
-                    'volume': round(total_case_equivalent_volume * (365.25 / date_range), 2) if date_range > 0 else total_case_equivalent_volume,  # ← FIXED
+                    'orders': round(total_orders * ann_factor, 0),
+                    'lines': round(total_lines * ann_factor, 0),
+                    'volume': round(total_case_equivalent_volume * ann_factor, 2),
                     'skus': total_skus
                 },
                 'monthly_average': {
                     'orders': round(total_orders / months_in_data, 0),
                     'lines': round(total_lines / months_in_data, 0),
-                    'volume': round(total_case_equivalent_volume / months_in_data, 2),  # ← FIXED
+                    'volume': round(total_case_equivalent_volume / months_in_data, 2),
                     'skus': total_skus
                 },
                 'monthly_peak': {
-                    'orders': round(self.daily_summary['Daily_Orders'].max() * 30, 0),
-                    'lines': round(total_lines / months_in_data * 1.2, 0),  # Estimate 20% above average
-                    'volume': round(self.daily_summary['Daily_Case_Equivalent_Volume'].max() * 30, 2),  # ← FIXED
+                    'orders': monthly_peak_orders,
+                    'lines': monthly_peak_lines,
+                    'volume': monthly_peak_volume,
                     'skus': total_skus
                 },
                 'daily_average': {
                     'orders': round(total_orders / days_in_data, 0),
                     'lines': round(total_lines / days_in_data, 0),
-                    'volume': round(total_case_equivalent_volume / days_in_data, 2),  # ← FIXED
-                    'skus': round(total_skus / days_in_data * 7, 0)  # Weekly SKU average
+                    'volume': round(total_case_equivalent_volume / days_in_data, 2),
+                    'skus': round(total_skus / days_in_data * 7, 0)
                 },
                 'absolute_peak': {
                     'orders': self.daily_summary['Daily_Orders'].max(),
-                    'lines': round(total_lines / days_in_data * 1.5, 0),  # Estimate
-                    'volume': self.daily_summary['Daily_Case_Equivalent_Volume'].max(),  # ← FIXED
+                    'lines': self.daily_summary['Daily_Order_Lines'].max(),
+                    'volume': self.daily_summary['Daily_Case_Equivalent_Volume'].max(),
                     'skus': total_skus
                 },
                 'design_peak': {
                     'orders': round(self.daily_summary['Daily_Orders'].quantile(0.95), 0),
-                    'lines': round(total_lines / days_in_data * 1.3, 0),
-                    'volume': round(self.daily_summary['Daily_Case_Equivalent_Volume'].quantile(0.95), 2),  # ← FIXED
+                    'lines': round(self.daily_summary['Daily_Order_Lines'].quantile(0.95), 0),
+                    'volume': round(self.daily_summary['Daily_Case_Equivalent_Volume'].quantile(0.95), 2),
                     'skus': total_skus
                 }
             },
             'each_picks': {
                 'annual_total': {
-                    'orders': round(each_orders * (365.25 / date_range), 0) if date_range > 0 else each_orders,
-                    'lines': round(each_lines * (365.25 / date_range), 0) if date_range > 0 else each_lines,
-                    'volume': round(each_case_equivalent_volume * (365.25 / date_range), 2) if date_range > 0 else each_case_equivalent_volume  # ← FIXED
+                    'orders': round(each_orders * ann_factor, 0),
+                    'lines': round(each_lines * ann_factor, 0),
+                    'volume': round(each_case_equivalent_volume * ann_factor, 2)
                 },
                 'daily_average': {
                     'orders': round(each_orders / days_in_data, 0),
                     'lines': round(each_lines / days_in_data, 0),
-                    'volume': round(each_case_equivalent_volume / days_in_data, 2)  # ← FIXED
+                    'volume': round(each_case_equivalent_volume / days_in_data, 2)
+                },
+                'design_peak': {
+                    'orders': _p95(each_daily_orders_s),
+                    'lines': _p95(each_daily_lines_s),
+                    'volume': _p95(each_daily_vol)
                 }
             },
             'case_picks': {
                 'annual_total': {
-                    'orders': round(case_orders * (365.25 / date_range), 0) if date_range > 0 else case_orders,
-                    'lines': round(case_lines * (365.25 / date_range), 0) if date_range > 0 else case_lines,
-                    'volume': round(case_case_equivalent_volume * (365.25 / date_range), 2) if date_range > 0 else case_case_equivalent_volume  # ← FIXED
+                    'orders': round(case_orders * ann_factor, 0),
+                    'lines': round(case_lines * ann_factor, 0),
+                    'volume': round(case_case_equivalent_volume * ann_factor, 2)
                 },
                 'daily_average': {
                     'orders': round(case_orders / days_in_data, 0),
                     'lines': round(case_lines / days_in_data, 0),
-                    'volume': round(case_case_equivalent_volume / days_in_data, 2)  # ← FIXED
+                    'volume': round(case_case_equivalent_volume / days_in_data, 2)
+                },
+                'design_peak': {
+                    'orders': _p95(case_daily_orders_s),
+                    'lines': _p95(case_daily_lines_s),
+                    'volume': _p95(case_daily_vol)
+                }
+            },
+            'mixed_picks': {
+                'annual_total': {
+                    'orders': round(mixed_orders * ann_factor, 0),
+                    'lines': round(mixed_lines * ann_factor, 0),
+                    'volume': round(mixed_case_equivalent_volume * ann_factor, 2)
+                },
+                'daily_average': {
+                    'orders': round(mixed_orders / days_in_data, 0),
+                    'lines': round(mixed_lines / days_in_data, 0),
+                    'volume': round(mixed_case_equivalent_volume / days_in_data, 2)
+                },
+                'design_peak': {
+                    'orders': _p95(mixed_daily_orders_s),
+                    'lines': _p95(mixed_daily_lines_s),
+                    'volume': _p95(mixed_daily_vol)
                 }
             }
         }
         
         # Calculate design P/A ratios
-        for category in ['overall', 'each_picks', 'case_picks']:
+        for category in ['overall', 'each_picks', 'case_picks', 'mixed_picks']:
             if category in outbound_stats:
                 daily_avg = outbound_stats[category].get('daily_average', {})
                 design_peak = outbound_stats[category].get('design_peak', daily_avg)
@@ -728,7 +794,7 @@ class OrderAnalyzer:
         )
         
         # Classify pick types on enhanced data
-        order_data_enhanced = self._classify_pick_types_enhanced(order_data_enhanced)
+        order_data_enhanced = self.converter._classify_pick_types(order_data_enhanced)
         order_data_enhanced['Month_Year'] = order_data_enhanced['Date'].dt.strftime('%b-%y')
         order_data_enhanced['Year_Month'] = order_data_enhanced['Date'].dt.to_period('M')
         
@@ -793,62 +859,87 @@ class OrderAnalyzer:
         existing_patterns.columns = ['_'.join(col).strip() for col in existing_patterns.columns]
         existing_patterns = existing_patterns.reset_index()
         
-        # Enhanced weekday analysis with pick types
-        order_data_enhanced = self._classify_pick_types()
+        # Enhanced weekday analysis with pick types and case equivalent volume
+        order_data_enhanced = self.converter.add_case_equivalent_columns(self.order_data)
+        order_data_enhanced = self.converter._classify_pick_types(order_data_enhanced)
         order_data_enhanced['Day_of_Week'] = order_data_enhanced['Date'].dt.day_name()
-        
-        # Overall weekday averages
+
+        # Calculate averages (divide by number of weeks)
+        total_weeks = max(1, (order_data_enhanced['Date'].max() - order_data_enhanced['Date'].min()).days / 7)
+
+        # Overall weekday averages including case equivalent volume
         weekday_overall = order_data_enhanced.groupby('Day_of_Week').agg({
             'Order No.': 'nunique',
             'Date': 'count',  # Lines
+            'Qty in Cases': 'sum',
             'Qty in Eaches': 'sum',
+            'Case_Equivalent_Volume': 'sum',
             'Sku Code': 'nunique'
-        }).rename(columns={'Order No.': 'Orders', 'Date': 'Lines', 'Qty in Eaches': 'Eaches', 'Sku Code': 'SKUs'})
-        
-        # Calculate averages (divide by number of weeks)
-        total_weeks = max(1, (order_data_enhanced['Date'].max() - order_data_enhanced['Date'].min()).days / 7)
+        }).rename(columns={
+            'Order No.': 'Orders', 'Date': 'Lines',
+            'Qty in Cases': 'Cases', 'Qty in Eaches': 'Eaches',
+            'Sku Code': 'SKUs'
+        })
+
         for col in weekday_overall.columns:
             weekday_overall[col] = weekday_overall[col] / total_weeks
-        
         weekday_overall = weekday_overall.round(0)
-        
+
         # Each picks weekday averages
-        each_picks = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Each_Pick']
-        weekday_each = each_picks.groupby('Day_of_Week').agg({
+        each_picks_wd = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Each_Pick']
+        weekday_each = each_picks_wd.groupby('Day_of_Week').agg({
             'Order No.': 'nunique',
             'Date': 'count',
-            'Qty in Eaches': 'sum'
+            'Qty in Eaches': 'sum',
+            'Case_Equivalent_Volume': 'sum'
         }).rename(columns={'Order No.': 'Orders', 'Date': 'Lines', 'Qty in Eaches': 'Eaches'})
-        
+
         for col in weekday_each.columns:
             weekday_each[col] = weekday_each[col] / total_weeks
         weekday_each = weekday_each.round(0)
-        
+
         # Case picks weekday averages
-        case_picks = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Case_Pick']
-        weekday_case = case_picks.groupby('Day_of_Week').agg({
+        case_picks_wd = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Case_Pick']
+        weekday_case = case_picks_wd.groupby('Day_of_Week').agg({
             'Order No.': 'nunique',
             'Date': 'count',
             'Qty in Cases': 'sum',
-            'Qty in Eaches': 'sum'
+            'Qty in Eaches': 'sum',
+            'Case_Equivalent_Volume': 'sum'
         }).rename(columns={'Order No.': 'Orders', 'Date': 'Lines', 'Qty in Cases': 'Cases', 'Qty in Eaches': 'Eaches'})
-        
+
         for col in weekday_case.columns:
             weekday_case[col] = weekday_case[col] / total_weeks
         weekday_case = weekday_case.round(0)
-        
+
+        # Mixed picks weekday averages (lines with both cases and eaches)
+        mixed_picks_wd = order_data_enhanced[order_data_enhanced['Pick_Type'] == 'Mixed_Pick']
+        weekday_mixed = mixed_picks_wd.groupby('Day_of_Week').agg({
+            'Order No.': 'nunique',
+            'Date': 'count',
+            'Qty in Cases': 'sum',
+            'Qty in Eaches': 'sum',
+            'Case_Equivalent_Volume': 'sum'
+        }).rename(columns={'Order No.': 'Orders', 'Date': 'Lines', 'Qty in Cases': 'Cases', 'Qty in Eaches': 'Eaches'})
+
+        for col in weekday_mixed.columns:
+            weekday_mixed[col] = weekday_mixed[col] / total_weeks
+        weekday_mixed = weekday_mixed.round(0)
+
         # Reorder by weekday
         day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
         weekday_overall = weekday_overall.reindex(day_order).reset_index()
-        weekday_each = weekday_each.reindex(day_order).reset_index() 
+        weekday_each = weekday_each.reindex(day_order).reset_index()
         weekday_case = weekday_case.reindex(day_order).reset_index()
-        
+        weekday_mixed = weekday_mixed.reindex(day_order).reset_index()
+
         return {
             'existing_patterns': existing_patterns,
             'weekday_averages': {
                 'overall': weekday_overall,
                 'each_picks': weekday_each,
-                'case_picks': weekday_case
+                'case_picks': weekday_case,
+                'mixed_picks': weekday_mixed
             },
             'summary': {
                 'busiest_day': weekday_overall.loc[weekday_overall['Orders'].idxmax(), 'Day_of_Week'],
@@ -857,51 +948,6 @@ class OrderAnalyzer:
             }
         }
     
-    def _classify_pick_types(self):
-        """
-        Classify orders into pick types (Each Pick vs Case Pick).
-        
-        Returns:
-            DataFrame: Enhanced order data with pick type classification
-        """
-        order_data_copy = self.order_data.copy()
-        
-        # Simple classification based on quantities
-        # Each Pick: Has eaches but no cases (or very few cases)
-        # Case Pick: Has cases (may also have eaches)
-        conditions = [
-            (order_data_copy['Qty in Cases'] == 0) & (order_data_copy['Qty in Eaches'] > 0),
-            (order_data_copy['Qty in Cases'] > 0)
-        ]
-        
-        choices = ['Each_Pick', 'Case_Pick']
-        
-        order_data_copy['Pick_Type'] = np.select(conditions, choices, default='Mixed_Pick')
-        
-        return order_data_copy
-    
-    def _classify_pick_types_enhanced(self, order_data_enhanced):
-        """
-        Classify orders into pick types for data that already has case equivalent columns.
-        
-        Args:
-            order_data_enhanced (pandas.DataFrame): Order data with case equivalent columns
-            
-        Returns:
-            pandas.DataFrame: Enhanced order data with pick type classification
-        """
-        # Simple classification based on quantities
-        conditions = [
-            (order_data_enhanced['Qty in Cases'] == 0) & (order_data_enhanced['Qty in Eaches'] > 0),
-            (order_data_enhanced['Qty in Cases'] > 0)
-        ]
-        
-        choices = ['Each_Pick', 'Case_Pick']
-        
-        order_data_enhanced['Pick_Type'] = np.select(conditions, choices, default='Mixed_Pick')
-        
-        return order_data_enhanced
-
 # Test function for standalone execution
 if __name__ == "__main__":
     print("OrderAnalyzer module - ready for use")
